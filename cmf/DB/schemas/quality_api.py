@@ -1,0 +1,159 @@
+"""Pydantic schemas for quality / Master BOC HTTP API."""
+from pydantic import BaseModel, ConfigDict, Field
+from typing import List, Optional
+from datetime import datetime
+
+
+class MasterBocCreate(BaseModel):
+    part_id: str = Field(..., description="Part number (oms.parts.part_number)")
+    sales_order_id: int
+    nominal: str
+    uppertol: float
+    lowertol: float
+    zone: str
+    dimension_type: str
+    measured_instrument: str = Field(default="default", description="Default measurement instrument")
+    op_no: int
+    bbox: str = Field(..., description="JSON string of bbox / metadata")
+    ipid: str
+
+
+class MasterBocBulkCreate(BaseModel):
+    items: List[MasterBocCreate]
+    user_id: Optional[int] = None
+
+
+class MasterBocUpdate(BaseModel):
+    zone: Optional[str] = None
+
+
+class MasterBocResponse(BaseModel):
+    id: int
+    part_id: str
+    sales_order_id: int
+    nominal: str
+    uppertol: float
+    lowertol: float
+    zone: str
+    dimension_type: str
+    measured_instrument: str
+    op_no: int
+    bbox: str
+    ipid: str
+    user_id: Optional[int] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class StageInspectionResponse(BaseModel):
+    id: int
+    part_id: int
+    sale_order_id: int
+    nominal_value: str
+    uppertol: float
+    lowertol: float
+    zone: str
+    dimension_type: str
+    measured_1: str
+    measured_2: str
+    measured_3: str
+    measured_mean: str
+    measured_instrument: str
+    used_inst: str
+    op_no: int
+    quantity_no: Optional[int] = None
+    bbox: Optional[str] = None
+    is_done: bool = False
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class StageInspectionUpdate(BaseModel):
+    measured_1: Optional[str] = None
+    measured_2: Optional[str] = None
+    measured_3: Optional[str] = None
+    measured_mean: Optional[str] = None
+    is_done: Optional[bool] = None
+
+
+class StageInspectionMeasurementSummary(BaseModel):
+    """True if any stage row for this part/order/op has a non-empty measurement field."""
+
+    any_recorded: bool
+
+
+class FTPStatusUpsert(BaseModel):
+    order_id: int
+    ipid: str = Field(..., description="FTP key for part/order/op scope")
+    status: str = Field(default="pending", description="pending | approved | rejected")
+    is_completed: Optional[bool] = None
+
+
+class FTPStatusResponse(BaseModel):
+    id: int
+    order_id: int
+    ipid: str
+    is_completed: bool
+    status: str
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class InspectionPlanStatusUpsert(BaseModel):
+    part_number: str = Field(..., description="oms.parts.part_number")
+    sales_order_id: int
+    op_no: int
+    status: str = Field(default="draft", description="draft | confirmed")
+    confirmed_by_username: Optional[str] = Field(
+        default=None,
+        description="Login name of user who confirmed the plan (set when status becomes confirmed)",
+    )
+
+
+class InspectionPlanStatusResponse(BaseModel):
+    id: int
+    part_number: str
+    sales_order_id: int
+    op_no: int
+    status: str
+    confirmed_by_username: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class NoteBase(BaseModel):
+    part_id: int
+    document_id: Optional[int] = None
+    x: Optional[float] = None
+    y: Optional[float] = None
+    width: Optional[float] = None
+    height: Optional[float] = None
+    page: Optional[int] = 1
+    note_text: Optional[str] = None
+
+
+class NoteCreate(NoteBase):
+    pass
+
+
+class NoteUpdate(BaseModel):
+    part_id: Optional[int] = None
+    document_id: Optional[int] = None
+    x: Optional[float] = None
+    y: Optional[float] = None
+    width: Optional[float] = None
+    height: Optional[float] = None
+    page: Optional[int] = None
+    note_text: Optional[str] = None
+
+
+class NoteResponse(NoteBase):
+    id: int
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)

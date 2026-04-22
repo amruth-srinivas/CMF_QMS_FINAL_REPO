@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+venv/
+env/
+.env
+
+# Python specific
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Frontend builds
+dist/
+build/
+
+# IDE and other config
+.idea/
+.vscode/
+.DS_Store
+*.log
