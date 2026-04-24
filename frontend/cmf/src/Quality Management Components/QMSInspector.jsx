@@ -432,11 +432,23 @@ const QMSInspector = () => {
       return;
     }
     try {
+      let reqUsername = '';
+      try {
+        const u = JSON.parse(localStorage.getItem('user') || '{}');
+        reqUsername = (u.user_name || u.username || '').trim();
+      } catch {
+        reqUsername = '';
+      }
+
       await axios.put(`${QUALITY_API_BASE_URL}/quality/ftp-status`, {
         order_id: oid,
         ipid,
         status: 'pending',
         is_completed: false,
+        part_number: partNumber,
+        op_no: opNo,
+        operation_id: Number(operationId),
+        requested_by_username: reqUsername || undefined,
       });
       await refreshFtpStatus();
       message.success('FTP approval request sent to supervisor.');

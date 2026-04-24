@@ -122,6 +122,19 @@ def get_part(part_id: int, db: Session = Depends(get_db)):
     return _part_to_dict(part, type_map, rm_map, user_map)
 
 
+@router.get("/part-number/{part_number}", response_model=Part)
+def get_part_by_number(part_number: str, db: Session = Depends(get_db)):
+    """Get a specific part by its part number string."""
+    part = db.query(PartModel).filter(PartModel.part_number == part_number).first()
+    if not part:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Part with number {part_number} not found"
+        )
+    type_map, rm_map, user_map = _build_part_maps(db)
+    return _part_to_dict(part, type_map, rm_map, user_map)
+
+
 @router.get("/product/{product_id}", response_model=List[Part])
 def get_parts_by_product(product_id: int, user_id: int | None = None, db: Session = Depends(get_db)):
     """Get all parts for a specific product. Filter by user_id for module-specific views."""

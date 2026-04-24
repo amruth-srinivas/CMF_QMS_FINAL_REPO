@@ -81,6 +81,8 @@ class FTP(Base):
     ipid = Column(String(255), nullable=False)
     is_completed = Column(Boolean, nullable=False, default=False)
     status = Column(String(255), nullable=False)
+    approved_by_username = Column(String(255), nullable=True)
+    approved_at = Column(TIMESTAMP(timezone=True), nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 

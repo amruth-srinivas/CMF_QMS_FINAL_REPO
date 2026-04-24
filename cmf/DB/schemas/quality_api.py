@@ -87,6 +87,13 @@ class FTPStatusUpsert(BaseModel):
     ipid: str = Field(..., description="FTP key for part/order/op scope")
     status: str = Field(default="pending", description="pending | approved | rejected")
     is_completed: Optional[bool] = None
+    # For notification creation
+    part_number: Optional[str] = None
+    op_no: Optional[int] = None
+    operation_id: Optional[int] = None
+    requested_by_username: Optional[str] = None
+    approved_by_username: Optional[str] = None
+    approved_at: Optional[datetime] = None
 
 
 class FTPStatusResponse(BaseModel):
@@ -95,6 +102,8 @@ class FTPStatusResponse(BaseModel):
     ipid: str
     is_completed: bool
     status: str
+    approved_by_username: Optional[str] = None
+    approved_at: Optional[datetime] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 

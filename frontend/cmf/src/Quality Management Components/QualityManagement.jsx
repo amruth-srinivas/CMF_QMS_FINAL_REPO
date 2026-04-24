@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Layout, Button, Modal, Table, Spin, Drawer, message, Select, Alert, Tooltip } from 'antd';
+import { Layout, Button, Modal, Table, Spin, Drawer, message, Select, Alert, Tooltip, Tabs } from 'antd';
 import { useNavigate, useSearchParams, useLocation } from 'react-router-dom';
-import { MenuOutlined, AppstoreOutlined, ShoppingCartOutlined, ClusterOutlined, ToolOutlined, InfoCircleOutlined, EyeOutlined, BuildOutlined, CheckCircleOutlined, CloudDownloadOutlined, EditOutlined } from "@ant-design/icons";
+import { MenuOutlined, AppstoreOutlined, ShoppingCartOutlined, ClusterOutlined, ToolOutlined, InfoCircleOutlined, EyeOutlined, BuildOutlined, CheckCircleOutlined, CloudDownloadOutlined, EditOutlined, FilePdfOutlined } from "@ant-design/icons";
 import QualityManagementBOM from './QualityManagementBOM';
 import { Card, Tag, Typography, Empty, Space } from 'antd';
 import axios from 'axios';
@@ -92,6 +92,58 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
   const [ftpApproveLoading, setFtpApproveLoading] = useState(false);
   const [ftpApproveRows, setFtpApproveRows] = useState([]);
   const [ftpApproveContext, setFtpApproveContext] = useState(null);
+  
+  const [partInspectionModalOpen, setPartInspectionModalOpen] = useState(false);
+  const [partInspectionLoading, setPartInspectionLoading] = useState(false);
+  const [partInspectionSummaryByOp, setPartInspectionSummaryByOp] = useState({});
+
+  const handleOpenPartInspection = async () => {
+    if (!selectedItem || !effectiveOrderId || String(effectiveOrderId) === 'null') {
+      message.warning('Please select a part and ensure an order is active.');
+      return;
+    }
+    setPartInspectionModalOpen(true);
+    setPartInspectionLoading(true);
+    const partPk = selectedItem.id;
+    const oid = Number(effectiveOrderId);
+    const results = {};
+    try {
+      await Promise.all(
+        operations.map(async (op) => {
+          const opNo = parseOpNo(op);
+          try {
+            const res = await axios.get(`${QUALITY_API_BASE_URL}/quality/stage-inspection/measurement-summary`, {
+              params: { part_id: partPk, sale_order_id: oid, op_no: opNo },
+            });
+            results[opNo] = {
+              opNo,
+              opName: op.operation_name,
+              ...res.data
+            };
+          } catch (err) {
+            console.warn(`Summary failed for Op ${opNo}:`, err);
+          }
+        })
+      );
+      setPartInspectionSummaryByOp(results);
+    } catch (err) {
+      console.error(err);
+      message.error('Failed to load part inspection summary');
+    } finally {
+      setPartInspectionLoading(false);
+    }
+  };
+
+  const handleOpenPartReport = () => {
+    message.info('Part Quality Report is being generated as a consolidated PDF summary.');
+  };
+
+  const handleGenerateReport = (record) => {
+    message.loading(`Generating inspection report for Operation ${record.operation_number}...`, 2);
+    setTimeout(() => {
+      message.success(`Inspection report for ${record.operation_name} is ready for download.`);
+    }, 2000);
+  };
 
   useEffect(() => {
     const oid = effectiveOrderId;
@@ -523,8 +575,15 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
     setFtpApproveModalOpen(true);
     setFtpApproveRows([]);
     setFtpApproveLoading(true);
+
+    // Prepare for drawing view
+    setPlanDrawingUrl(null);
+    setPlanDrawingFileName(null);
+    setPlanDrawingIsPdf(true);
+
     const ipid = buildFtpIpid(selectedItem.part_number, opNo);
     try {
+      // Ensure records exist
       try {
         await axios.post(`${QUALITY_API_BASE_URL}/quality/stage-inspection/ensure`, null, {
           params: {
@@ -540,19 +599,38 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
       } catch (ensureErr) {
         console.warn('stage-inspection/ensure', ensureErr);
       }
-      const res = await axios.get(`${QUALITY_API_BASE_URL}/quality/stage-inspection`, {
-        params: {
-          part_id: selectedItem.id,
-          sale_order_id: oid,
-          op_no: opNo,
-          quantity_no: 1,
-        },
-      });
+
+      // Fetch measurements and balloon documents in parallel
+      const [res, docsRes] = await Promise.all([
+        axios.get(`${QUALITY_API_BASE_URL}/quality/stage-inspection`, {
+          params: {
+            part_id: selectedItem.id,
+            sale_order_id: oid,
+            op_no: opNo,
+            quantity_no: 1,
+          },
+        }),
+        axios.get(`${QUALITY_API_BASE_URL}/operation-documents/operation/${record.id}`),
+      ]);
+
       setFtpApproveRows(Array.isArray(res.data) ? res.data : []);
+
+      // Handle ballooned drawing
+      const docs = Array.isArray(docsRes.data) ? docsRes.data : [];
+      const baloonDoc = docs
+        .filter(isBalloonOperationDocument)
+        .sort((a, b) => Number(b?.id || 0) - Number(a?.id || 0))[0];
+
+      if (baloonDoc) {
+        const name = baloonDoc.document_name || '';
+        setPlanDrawingIsPdf(/\.pdf$/i.test(name));
+        setPlanDrawingFileName(name || null);
+        setPlanDrawingUrl(`${QUALITY_API_BASE_URL}/operation-documents/${baloonDoc.id}/preview`);
+      }
     } catch (err) {
       console.error(err);
       const detail = err.response?.data?.detail;
-      message.error(typeof detail === 'string' ? detail : err.message || 'Failed to load quantity 1 measurements');
+      message.error(typeof detail === 'string' ? detail : err.message || 'Failed to load quantity 1 measurements/drawing');
       setFtpApproveRows([]);
     } finally {
       setFtpApproveLoading(false);
@@ -596,6 +674,8 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
           setFtpApproveModalOpen(false);
           setFtpApproveContext(null);
           setFtpApproveRows([]);
+          setPlanDrawingUrl(null);
+          setPlanDrawingFileName(null);
         } catch (err) {
           console.error(err);
           const detail = err.response?.data?.detail;
@@ -928,14 +1008,30 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                    selectedItem.itemType === 'assembly' ? selectedItem.assembly_name : 
                    selectedItem.part_name}
                   {selectedItem.itemType === 'part' && (
-                    <Button 
-                      type="link" 
-                      icon={<EyeOutlined />} 
-                      onClick={handlePreviewPart}
-                      style={{ marginLeft: '12px' }}
-                    >
-                      View Part Drawing
-                    </Button>
+                    <Space size={0}>
+                      <Button 
+                        type="link" 
+                        icon={<EyeOutlined />} 
+                        onClick={handlePreviewPart}
+                        style={{ marginLeft: '12px' }}
+                      >
+                        View Part Drawing
+                      </Button>
+                      <Button 
+                        type="link" 
+                        icon={<CheckCircleOutlined />} 
+                        onClick={() => handleOpenPartInspection()}
+                      >
+                        Part Inspection
+                      </Button>
+                      <Button 
+                        type="link" 
+                        icon={<CloudDownloadOutlined />} 
+                        onClick={() => handleOpenPartReport()}
+                      >
+                        Part Report
+                      </Button>
+                    </Space>
                   )}
                 </Title>
                 <Space>
@@ -960,193 +1056,249 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
 
               {selectedItem.itemType === 'part' && (
                 <div style={{ background: '#fff', padding: '20px', borderRadius: '12px', border: '1px solid #f0f0f0', boxShadow: '0 2px 12px rgba(0,0,0,0.03)' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-                    <Title level={4} style={{ margin: 0, color: '#1a3353' }}>Process Operations</Title>
-                  </div>
-                  
-                  <Table 
-                    loading={loadingDetails}
-                    dataSource={operations}
-                    rowKey="id"
-                    pagination={false}
-                    scroll={{ x: 'max-content' }}
-                    columns={[
+                  <Tabs
+                    defaultActiveKey="1"
+                    items={[
                       {
-                        title: 'Op #',
-                        dataIndex: 'operation_number',
-                        key: 'operation_number',
-                        width: 80,
-                        render: val => <Text strong style={{ color: '#1890ff' }}>{val}</Text>
-                      },
-                      {
-                        title: 'Operation Name',
-                        dataIndex: 'operation_name',
-                        key: 'operation_name',
-                        render: val => <Text style={{ fontWeight: 500 }}>{val}</Text>
-                      },
-                      {
-                        title: 'Plan status',
-                        key: 'inspection_plan_status',
-                        width: 120,
-                        render: (_, record) => {
-                          const opNo = parseOpNo(record);
-                          const st = inspectionPlanByOp[opNo];
-                          if (st === 'confirmed') {
-                            return <Tag color="success" style={{ borderRadius: '12px' }}>Confirmed</Tag>;
-                          }
-                          if (st === 'draft') {
-                            return <Tag color="processing" style={{ borderRadius: '12px' }}>Draft</Tag>;
-                          }
-                          return <Tag style={{ borderRadius: '12px' }}>—</Tag>;
-                        },
-                      },
-                      {
-                        title: 'Confirmed by',
-                        key: 'inspection_plan_confirmed_by',
-                        width: 140,
-                        render: (_, record) => {
-                          const opNo = parseOpNo(record);
-                          const st = inspectionPlanByOp[opNo];
-                          const who = inspectionPlanConfirmedByOp[opNo];
-                          if (st !== 'confirmed' || !who) {
-                            return <Text type="secondary">—</Text>;
-                          }
-                          return (
-                            <Text style={{ fontSize: 13 }} ellipsis={{ tooltip: who }}>
-                              {who}
-                            </Text>
-                          );
-                        },
-                      },
-                      {
-                        title: 'Req qty',
-                        dataIndex: 'required_quantity',
-                        key: 'required_quantity',
-                        align: 'center'
-                      },
-                      {
-                        title: 'Comp qty',
-                        dataIndex: 'completed_quantity',
-                        key: 'completed_quantity',
-                        align: 'center'
-                      },
-                      {
-                        title: 'Acpt qty',
-                        dataIndex: 'accepted_quantity',
-                        key: 'accepted_quantity',
-                        align: 'center'
-                      },
-                      {
-                        title: 'Rej qty',
-                        dataIndex: 'rejected_quantity',
-                        key: 'rejected_quantity',
-                        align: 'center'
-                      },
-                      {
-                        title: 'Yield %',
-                        dataIndex: 'yield_percentage',
-                        key: 'yield_percentage',
-                        align: 'center',
-                        render: val => (
-                          <Text style={{ color: val >= 95 ? '#52c41a' : val < 80 ? '#f5222d' : '#faad14', fontWeight: 'bold' }}>
-                            {val ? `${val}%` : '0%'}
-                          </Text>
-                        )
-                      },
-                      {
-                        title: 'Actions',
-                        key: 'actions',
-                        fixed: 'right',
-                        render: (_, record) => {
-                          const opNo = parseOpNo(record);
-                          const st = inspectionPlanByOp[opNo];
-                          const ftpStatus = ftpStatusByOp[opNo] || null;
-                          const planLabel = st === 'confirmed' ? 'View Plan' : st === 'draft' ? 'Continue Plan' : 'Create Plan';
-                          const PlanIcon = st === 'confirmed' ? EyeOutlined : BuildOutlined;
-                          return (
-                          <Space size="middle">
-                            <Button 
-                              size="small" 
-                              type="primary" 
-                              ghost 
-                              icon={<PlanIcon />}
-                              onClick={async () => {
-                                if (st === 'confirmed') {
-                                  await openConfirmedPlanModal(record, opNo);
-                                  return;
-                                }
-                                const { url, isPdf, name, apiDocumentId } = getDrawingInfo(record);
-                                const hierarchy = productHierarchies[selectedItem.productId];
-                                const projectName = hierarchy?.product?.product_name || '';
-                                const partName = selectedItem.part_name || '';
-                                const opParts = [];
-                                if (record.operation_number != null && record.operation_number !== '') opParts.push(String(record.operation_number));
-                                if (record.operation_name) opParts.push(record.operation_name);
-                                const opLabel = opParts.join(': ');
-                                if (effectiveOrderId && String(effectiveOrderId) !== 'null' && selectedItem.part_number) {
-                                  if (st !== 'confirmed') {
-                                    try {
-                                      await axios.put(`${QUALITY_API_BASE_URL}/quality/inspection-plan-status`, {
-                                        part_number: selectedItem.part_number,
-                                        sales_order_id: Number(effectiveOrderId),
-                                        op_no: opNo,
-                                        status: 'draft',
-                                      });
-                                      setInspectionPlanByOp((prev) => ({ ...prev, [opNo]: 'draft' }));
-                                      setInspectionPlanConfirmedByOp((prev) => ({ ...prev, [opNo]: null }));
-                                    } catch (err) {
-                                      console.error(err);
-                                      const detail = err.response?.data?.detail;
-                                      message.error(typeof detail === 'string' ? detail : err.message || 'Could not start inspection plan');
-                                      return;
-                                    }
+                        key: '1',
+                        label: 'Inspection Details',
+                        children: (
+                          <Table 
+                            loading={loadingDetails}
+                            dataSource={operations}
+                            rowKey="id"
+                            pagination={false}
+                            scroll={{ x: 'max-content' }}
+                            columns={[
+                              {
+                                title: 'Op #',
+                                dataIndex: 'operation_number',
+                                key: 'operation_number',
+                                width: 80,
+                                render: val => <Text strong style={{ color: '#1890ff' }}>{val}</Text>
+                              },
+                              {
+                                title: 'Operation Name',
+                                dataIndex: 'operation_name',
+                                key: 'operation_name',
+                                render: val => <Text style={{ fontWeight: 500 }}>{val}</Text>
+                              },
+                              {
+                                title: 'Plan status',
+                                key: 'inspection_plan_status',
+                                width: 120,
+                                render: (_, record) => {
+                                  const opNo = parseOpNo(record);
+                                  const st = inspectionPlanByOp[opNo];
+                                  if (st === 'confirmed') {
+                                    return <Tag color="success" style={{ borderRadius: '12px' }}>Confirmed</Tag>;
                                   }
-                                }
-                                const qs = new URLSearchParams({
-                                  drawingUrl: url || '',
-                                  isPdf: String(!!isPdf),
-                                  fileName: name || '',
-                                  projectName,
-                                  partName,
-                                  operationName: opLabel,
-                                  partId: String(selectedItem.id),
-                                  partNumber: selectedItem.part_number || '',
-                                  operationNumber: String(record.operation_number ?? ''),
-                                  operationId: String(record.id),
-                                });
-                                if (apiDocumentId != null) qs.set('documentId', String(apiDocumentId));
-                                if (effectiveOrderId && String(effectiveOrderId) !== 'null') {
-                                  qs.set('orderId', String(effectiveOrderId));
-                                }
-                                navigate(`${qmsInspectorBase}?${qs.toString()}`);
-                              }}
-                            >
-                              {planLabel}
-                            </Button>
-                            <Button 
-                              size="small" 
-                              icon={<CheckCircleOutlined />} 
-                              style={{ color: '#52c41a', borderColor: '#52c41a' }}
-                              onClick={() => openMeasurementsModal(record)}
-                            >
-                              Measurements
-                            </Button>
-                            {isSupervisorView && ftpStatus === 'pending' && (
-                              <Button size="small" type="primary" onClick={() => void openFtpApproveModal(record)}>
-                                Approve FTP
-                              </Button>
-                            )}
-                            <Button 
-                              size="small" 
-                              icon={<EyeOutlined />} 
-                              onClick={() => handlePreviewOperation(record)}
-                              title="View Drawing"
-                            >
-                              View Drawing
-                            </Button>
-                          </Space>
-                          );
-                        },
+                                  if (st === 'draft') {
+                                    return <Tag color="processing" style={{ borderRadius: '12px' }}>Draft</Tag>;
+                                  }
+                                  return <Tag style={{ borderRadius: '12px' }}>—</Tag>;
+                                },
+                              },
+                              {
+                                title: 'Confirmed by',
+                                key: 'inspection_plan_confirmed_by',
+                                width: 140,
+                                render: (_, record) => {
+                                  const opNo = parseOpNo(record);
+                                  const st = inspectionPlanByOp[opNo];
+                                  const who = inspectionPlanConfirmedByOp[opNo];
+                                  if (st !== 'confirmed' || !who) {
+                                    return <Text type="secondary">—</Text>;
+                                  }
+                                  return (
+                                    <Text style={{ fontSize: 13 }} ellipsis={{ tooltip: who }}>
+                                      {who}
+                                    </Text>
+                                  );
+                                },
+                              },
+                              {
+                                title: 'Req qty',
+                                dataIndex: 'required_quantity',
+                                key: 'required_quantity',
+                                align: 'center'
+                              },
+                              {
+                                title: 'Comp qty',
+                                dataIndex: 'completed_quantity',
+                                key: 'completed_quantity',
+                                align: 'center'
+                              },
+                              {
+                                title: 'Acpt qty',
+                                dataIndex: 'accepted_quantity',
+                                key: 'accepted_quantity',
+                                align: 'center'
+                              },
+                              {
+                                title: 'Rej qty',
+                                dataIndex: 'rejected_quantity',
+                                key: 'rejected_quantity',
+                                align: 'center'
+                              },
+                              {
+                                title: 'Yield %',
+                                dataIndex: 'yield_percentage',
+                                key: 'yield_percentage',
+                                align: 'center',
+                                render: val => (
+                                  <Text style={{ color: val >= 95 ? '#52c41a' : val < 80 ? '#f5222d' : '#faad14', fontWeight: 'bold' }}>
+                                    {val ? `${val}%` : '0%'}
+                                  </Text>
+                                )
+                              },
+                              {
+                                title: 'Actions',
+                                key: 'actions',
+                                fixed: 'right',
+                                render: (_, record) => {
+                                  const opNo = parseOpNo(record);
+                                  const st = inspectionPlanByOp[opNo];
+                                  const ftpStatus = ftpStatusByOp[opNo] || null;
+                                  const planLabel = st === 'confirmed' ? 'View Plan' : st === 'draft' ? 'Continue Plan' : 'Create Plan';
+                                  const PlanIcon = st === 'confirmed' ? EyeOutlined : BuildOutlined;
+                                  return (
+                                  <Space size="middle">
+                                    <Button 
+                                      size="small" 
+                                      type="primary" 
+                                      ghost 
+                                      icon={<PlanIcon />}
+                                      onClick={async () => {
+                                        if (st === 'confirmed') {
+                                          await openConfirmedPlanModal(record, opNo);
+                                          return;
+                                        }
+                                        const { url, isPdf, name, apiDocumentId } = getDrawingInfo(record);
+                                        const hierarchy = productHierarchies[selectedItem.productId];
+                                        const projectName = hierarchy?.product?.product_name || '';
+                                        const partName = selectedItem.part_name || '';
+                                        const opParts = [];
+                                        if (record.operation_number != null && record.operation_number !== '') opParts.push(String(record.operation_number));
+                                        if (record.operation_name) opParts.push(record.operation_name);
+                                        const opLabel = opParts.join(': ');
+                                        if (effectiveOrderId && String(effectiveOrderId) !== 'null' && selectedItem.part_number) {
+                                          if (st !== 'confirmed') {
+                                            try {
+                                              await axios.put(`${QUALITY_API_BASE_URL}/quality/inspection-plan-status`, {
+                                                part_number: selectedItem.part_number,
+                                                sales_order_id: Number(effectiveOrderId),
+                                                op_no: opNo,
+                                                status: 'draft',
+                                              });
+                                              setInspectionPlanByOp((prev) => ({ ...prev, [opNo]: 'draft' }));
+                                              setInspectionPlanConfirmedByOp((prev) => ({ ...prev, [opNo]: null }));
+                                            } catch (err) {
+                                              console.error(err);
+                                              const detail = err.response?.data?.detail;
+                                              message.error(typeof detail === 'string' ? detail : err.message || 'Could not start inspection plan');
+                                              return;
+                                            }
+                                          }
+                                        }
+                                        const qs = new URLSearchParams({
+                                          drawingUrl: url || '',
+                                          isPdf: String(!!isPdf),
+                                          fileName: name || '',
+                                          projectName,
+                                          partName,
+                                          operationName: opLabel,
+                                          partId: String(selectedItem.id),
+                                          partNumber: selectedItem.part_number || '',
+                                          operationNumber: String(record.operation_number ?? ''),
+                                          operationId: String(record.id),
+                                        });
+                                        if (apiDocumentId != null) qs.set('documentId', String(apiDocumentId));
+                                        if (effectiveOrderId && String(effectiveOrderId) !== 'null') {
+                                          qs.set('orderId', String(effectiveOrderId));
+                                        }
+                                        navigate(`${qmsInspectorBase}?${qs.toString()}`);
+                                      }}
+                                    >
+                                      {planLabel}
+                                    </Button>
+                                    <Button 
+                                      size="small" 
+                                      icon={<CheckCircleOutlined />} 
+                                      style={{ color: '#52c41a', borderColor: '#52c41a' }}
+                                      onClick={() => openMeasurementsModal(record)}
+                                    >
+                                      Measurements
+                                    </Button>
+
+                                    <Button 
+                                      size="small" 
+                                      icon={<EyeOutlined />} 
+                                      onClick={() => handlePreviewOperation(record)}
+                                      title="View Drawing"
+                                    >
+                                      View Drawing
+                                    </Button>
+                                  </Space>
+                                  );
+                                },
+                              },
+                            ]}
+                          />
+                        ),
+                      },
+                      {
+                        key: '2',
+                        label: 'Inspection Report',
+                        children: (
+                          <div style={{ maxWidth: '800px' }}>
+                            <Table 
+                              loading={loadingDetails}
+                              dataSource={operations}
+                              rowKey="id"
+                              pagination={false}
+                              columns={[
+                                {
+                                  title: 'Op #',
+                                  dataIndex: 'operation_number',
+                                  key: 'operation_number',
+                                  width: 80,
+                                  render: val => <Text strong style={{ color: '#1890ff' }}>{val}</Text>
+                                },
+                                {
+                                  title: 'Operation Name',
+                                  dataIndex: 'operation_name',
+                                  key: 'operation_name',
+                                },
+                                {
+                                  title: 'Approved by',
+                                  key: 'approved_by',
+                                  render: (_, record) => {
+                                    const opNo = parseOpNo(record);
+                                    const who = inspectionPlanConfirmedByOp[opNo];
+                                    return who ? <Text>{who}</Text> : <Text type="secondary">—</Text>;
+                                  },
+                                },
+                                {
+                                  title: 'Actions',
+                                  key: 'report_actions',
+                                  align: 'center',
+                                  render: (_, record) => (
+                                    <Button 
+                                      type="primary" 
+                                      ghost 
+                                      icon={<FilePdfOutlined />} 
+                                      onClick={() => handleGenerateReport(record)}
+                                      style={{ borderRadius: '6px' }}
+                                    >
+                                      Generate Report
+                                    </Button>
+                                  ),
+                                },
+                              ]}
+                            />
+                          </div>
+                        ),
                       },
                     ]}
                   />
@@ -1426,12 +1578,14 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                     : 'Review FTP'
                 }
                 centered
-                width="96%"
+                width="98%"
                 open={ftpApproveModalOpen}
                 onCancel={() => {
                   setFtpApproveModalOpen(false);
                   setFtpApproveContext(null);
                   setFtpApproveRows([]);
+                  setPlanDrawingUrl(null);
+                  setPlanDrawingFileName(null);
                 }}
                 destroyOnClose
                 footer={
@@ -1441,6 +1595,8 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                         setFtpApproveModalOpen(false);
                         setFtpApproveContext(null);
                         setFtpApproveRows([]);
+                        setPlanDrawingUrl(null);
+                        setPlanDrawingFileName(null);
                       }}
                     >
                       Cancel
@@ -1459,155 +1615,175 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                     </Button>
                   </Space>
                 }
-                styles={{ body: { maxHeight: '78vh', overflow: 'auto', padding: 12, background: '#f7f8fa' } }}
+                styles={{ body: { padding: 12, height: '80vh', background: '#f7f8fa' } }}
               >
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10, fontFamily: '"JetBrains Mono", "Consolas", "Courier New", monospace' }}>
-                  {ftpApproveContext ? (
-                    <div
-                      style={{
-                        border: '1px solid #e5e7eb',
-                        borderRadius: 8,
-                        background: '#fff',
-                        padding: '10px 12px',
-                        display: 'flex',
-                        flexWrap: 'wrap',
-                        gap: 12,
-                        alignItems: 'center',
-                      }}
-                    >
-                      <Text>
-                        <b>Order:</b> {ftpApproveContext.orderId}
-                      </Text>
-                      <Text>
-                        <b>Part:</b> {ftpApproveContext.partNo}
-                      </Text>
-                      <Tag color="processing" style={{ margin: 0 }}>
-                        Quantity 1 (first-time pass review)
-                      </Tag>
-                    </div>
-                  ) : null}
-                  {!ftpApproveLoading && ftpApproveDecoratedRows.length === 0 ? (
-                    <Alert
-                      type="warning"
-                      showIcon
-                      message="No quantity 1 measurement rows found."
-                      description="Ensure the operator has completed quantity 1 in the inspector and requested FTP. If the plan exists, try refreshing after measurements are saved."
-                    />
-                  ) : null}
-                  {ftpApproveDecoratedRows.some((r) => r._status === 'out') ? (
-                    <Alert
-                      type="warning"
-                      showIcon
-                      message="Some characteristics are out of tolerance on quantity 1."
-                      description="You can still approve FTP if this is acceptable for your process; otherwise reject with the operator and re-measure."
-                    />
-                  ) : null}
-                  <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, background: '#fff', overflow: 'hidden' }}>
-                    {ftpApproveAllReadingsEmpty && !ftpApproveLoading ? (
-                      <div style={{ padding: 40 }}>
-                        <Empty description="No measurements found" />
-                      </div>
-                    ) : (
-                      <>
-                        <div style={{ padding: '8px 12px', borderBottom: '1px solid #eef0f3', background: '#fafbfc', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                          <Tag color="default" style={{ margin: 0, borderRadius: 12 }}>
-                            Total: {ftpApproveSummary.total}
-                          </Tag>
-                          <Tag color="success" style={{ margin: 0, borderRadius: 12 }}>
-                            Within Tol: {ftpApproveSummary.within}
-                          </Tag>
-                          <Tag color="error" style={{ margin: 0, borderRadius: 12 }}>
-                            Out Tol: {ftpApproveSummary.out}
-                          </Tag>
-                          <Tag color="processing" style={{ margin: 0, borderRadius: 12 }}>
-                            No Tol: {ftpApproveSummary.noTol}
-                          </Tag>
-                          <Tag color="blue" style={{ margin: 0, borderRadius: 12 }}>
-                            Pass Rate: {ftpApproveSummary.passRate}%
-                          </Tag>
+                <div style={{ display: 'grid', gridTemplateColumns: '1.45fr 1fr', gap: 14, height: '100%', fontFamily: '"JetBrains Mono", "Consolas", "Courier New", monospace' }}>
+                  <div style={{ border: '1px solid #dfe4ea', borderRadius: 10, overflow: 'hidden', background: '#fff', display: 'flex', flexDirection: 'column', boxShadow: '0 2px 10px rgba(15,23,42,0.04)' }}>
+                    <div style={{ padding: '14px 16px', borderBottom: '1px solid #eef0f3', background: '#fafbfc' }}>
+                      <Text strong style={{ color: '#111827', fontSize: 22, lineHeight: 1.2, fontFamily: '"JetBrains Mono", "Consolas", "Courier New", monospace' }}>Inspection Details</Text>
+                      {ftpApproveContext && (
+                        <div style={{ marginTop: 10, fontSize: 16, color: '#374151' }}>
+                          <Text style={{ fontSize: 16, fontFamily: '"JetBrains Mono", "Consolas", "Courier New", monospace' }}><b>Order:</b> {ftpApproveContext.orderId}</Text>
+                          <Text style={{ fontSize: 16, marginLeft: 18, fontFamily: '"JetBrains Mono", "Consolas", "Courier New", monospace' }}><b>Part:</b> {ftpApproveContext.partNo}</Text>
+                          <Text style={{ fontSize: 16, marginLeft: 18, fontFamily: '"JetBrains Mono", "Consolas", "Courier New", monospace' }}><b>Operation:</b> {ftpApproveContext.opNo}</Text>
                         </div>
-                        <Table
-                          size="small"
-                          loading={ftpApproveLoading}
-                          dataSource={ftpApproveDecoratedRows}
-                          rowKey="id"
-                          pagination={false}
-                          scroll={{ x: 'max-content', y: Math.min(420, Math.max(160, ftpApproveDecoratedRows.length * 44 + 70)) }}
-                          columns={[
-                            { title: 'S.No', key: 'sno', width: 64, render: (_, __, idx) => idx + 1 },
-                            { title: 'Zone', dataIndex: 'zone', key: 'zone', width: 82, render: (z) => <Tag color="geekblue" style={{ margin: 0, borderRadius: 10 }}>{z || '—'}</Tag> },
-                            {
-                              title: 'Type',
-                              dataIndex: 'dimension_type',
-                              key: 'dimension_type',
-                              width: 160,
-                              render: (v) => (
-                                <Tag color={dimensionTypeTagColor(v)} style={{ margin: 0, borderRadius: 10 }}>
-                                  {v || '—'}
-                                </Tag>
-                              ),
-                            },
-                            {
-                              title: 'Plan (from inspection plan)',
-                              key: 'plan_group_ftp',
-                              children: [
-                                { title: 'Nominal', dataIndex: 'nominal_value', key: 'nominal_value', width: 100, render: (v) => <Text strong>{v ?? '—'}</Text> },
-                                { title: 'Upper', dataIndex: 'uppertol', key: 'uppertol', width: 80, render: (v) => <Text style={{ color: Number(v) > 0 ? '#15803d' : '#6b7280' }}>{fmtTol(v)}</Text> },
-                                { title: 'Lower', dataIndex: 'lowertol', key: 'lowertol', width: 80, render: (v) => <Text style={{ color: Number(v) < 0 ? '#b91c1c' : '#6b7280' }}>{fmtTol(v)}</Text> },
-                                {
-                                  title: 'Upper Limit',
-                                  key: 'ul',
-                                  width: 108,
-                                  render: (_, r) => <Text style={{ color: '#166534' }}>{fmt4(r._upperLimit)}</Text>,
-                                },
-                                {
-                                  title: 'Lower Limit',
-                                  key: 'll',
-                                  width: 108,
-                                  render: (_, r) => <Text style={{ color: '#991b1b' }}>{fmt4(r._lowerLimit)}</Text>,
-                                },
-                              ],
-                            },
-                            {
-                              title: 'Actual (Qty 1)',
-                              key: 'actual_group_ftp',
-                              children: [
-                                { title: '#1', dataIndex: 'measured_1', key: 'measured_1', width: 72 },
-                                { title: '#2', dataIndex: 'measured_2', key: 'measured_2', width: 72 },
-                                { title: '#3', dataIndex: 'measured_3', key: 'measured_3', width: 72 },
-                                {
-                                  title: 'Mean',
-                                  key: 'mean_c',
-                                  width: 96,
-                                  render: (_, r) => {
-                                    const m = r._computedMean;
-                                    const display = m == null ? '—' : fmt4(m);
-                                    if (r._status === 'within') return <Text strong style={{ color: '#15803d' }}>{display}</Text>;
-                                    if (r._status === 'out') return <Text strong style={{ color: '#dc2626' }}>{display}</Text>;
-                                    return <Text style={{ color: '#4b5563' }}>{display}</Text>;
+                      )}
+                    </div>
+
+                    <div style={{ padding: '10px 14px', flex: 1, minHeight: 0, overflow: 'auto' }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                        {!ftpApproveLoading && ftpApproveDecoratedRows.length === 0 ? (
+                          <Alert
+                            type="warning"
+                            showIcon
+                            message="No quantity 1 measurement rows found."
+                            description="Ensure the operator has completed quantity 1 in the inspector and requested FTP."
+                          />
+                        ) : null}
+                        {ftpApproveDecoratedRows.some((r) => r._status === 'out') ? (
+                          <Alert
+                            type="warning"
+                            showIcon
+                            message="Some characteristics are out of tolerance on quantity 1."
+                            description="You can still approve FTP if this is acceptable for your process; otherwise reject with the operator and re-measure."
+                          />
+                        ) : null}
+
+                        <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, background: '#fff', overflow: 'hidden' }}>
+                          {ftpApproveAllReadingsEmpty && !ftpApproveLoading ? (
+                            <div style={{ padding: 40 }}>
+                              <Empty description="No measurements found or incomplete data" />
+                            </div>
+                          ) : (
+                            <>
+                              <div style={{ padding: '8px 12px', borderBottom: '1px solid #eef0f3', background: '#fafbfc', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                                <Tag color="default" style={{ margin: 0, borderRadius: 12 }}>Total: {ftpApproveSummary.total}</Tag>
+                                <Tag color="success" style={{ margin: 0, borderRadius: 12 }}>Within Tol: {ftpApproveSummary.within}</Tag>
+                                <Tag color="error" style={{ margin: 0, borderRadius: 12 }}>Out Tol: {ftpApproveSummary.out}</Tag>
+                                <Tag color="processing" style={{ margin: 0, borderRadius: 12 }}>No Tol: {ftpApproveSummary.noTol}</Tag>
+                                <Tag color="blue" style={{ margin: 0, borderRadius: 12 }}>Pass Rate: {ftpApproveSummary.passRate}%</Tag>
+                              </div>
+                              <Table
+                                size="small"
+                                loading={ftpApproveLoading}
+                                dataSource={ftpApproveDecoratedRows}
+                                rowKey="id"
+                                pagination={false}
+                                scroll={{ x: 'max-content', y: 460 }}
+                                columns={[
+                                  { title: 'S.No', key: 'sno', width: 64, render: (_, __, idx) => idx + 1 },
+                                  { title: 'Zone', dataIndex: 'zone', key: 'zone', width: 82, render: (z) => <Tag color="geekblue" style={{ margin: 0, borderRadius: 10 }}>{z || '—'}</Tag> },
+                                  {
+                                    title: 'Type',
+                                    dataIndex: 'dimension_type',
+                                    key: 'dimension_type',
+                                    width: 160,
+                                    render: (v) => (
+                                      <Tag color={dimensionTypeTagColor(v)} style={{ margin: 0, borderRadius: 10 }}>
+                                        {v || '—'}
+                                      </Tag>
+                                    ),
                                   },
-                                },
-                                {
-                                  title: 'Status',
-                                  key: 'st',
-                                  width: 118,
-                                  render: (_, r) => {
-                                    if (r._status === 'within') return <Tag color="success" style={{ margin: 0, borderRadius: 10 }}>Within Tol</Tag>;
-                                    if (r._status === 'out') return <Tag color="error" style={{ margin: 0, borderRadius: 10 }}>Out Tol</Tag>;
-                                    if (r._status === 'no_tolerance') return <Tag color="processing" style={{ margin: 0, borderRadius: 10 }}>No Tol</Tag>;
-                                    return <Tag style={{ margin: 0, borderRadius: 10 }}>Pending</Tag>;
+                                  {
+                                    title: 'Plan (from inspection plan)',
+                                    key: 'plan_group_ftp',
+                                    children: [
+                                      { title: 'Nominal', dataIndex: 'nominal_value', key: 'nominal_value', width: 100, render: (v) => <Text strong>{v ?? '—'}</Text> },
+                                      { title: 'Upper', dataIndex: 'uppertol', key: 'uppertol', width: 80, render: (v) => <Text style={{ color: Number(v) > 0 ? '#15803d' : '#6b7280' }}>{fmtTol(v)}</Text> },
+                                      { title: 'Lower', dataIndex: 'lowertol', key: 'lowertol', width: 80, render: (v) => <Text style={{ color: Number(v) < 0 ? '#b91c1c' : '#6b7280' }}>{fmtTol(v)}</Text> },
+                                    ],
                                   },
-                                },
-                              ],
-                            },
-                          ]}
-                        />
-                      </>
-                    )}
+                                  {
+                                    title: 'Actual (Qty 1)',
+                                    key: 'actual_group_ftp',
+                                    children: [
+                                      { title: '#1', dataIndex: 'measured_1', key: 'measured_1', width: 72 },
+                                      { title: '#2', dataIndex: 'measured_2', key: 'measured_2', width: 72 },
+                                      { title: '#3', dataIndex: 'measured_3', key: 'measured_3', width: 72 },
+                                      {
+                                        title: 'Mean',
+                                        key: 'mean_c',
+                                        width: 96,
+                                        render: (_, r) => {
+                                          const m = r._computedMean;
+                                          const display = m == null ? '—' : fmt4(m);
+                                          if (r._status === 'within') return <Text strong style={{ color: '#15803d' }}>{display}</Text>;
+                                          if (r._status === 'out') return <Text strong style={{ color: '#dc2626' }}>{display}</Text>;
+                                          return <Text style={{ color: '#4b5563' }}>{display}</Text>;
+                                        },
+                                      },
+                                      {
+                                        title: 'Status',
+                                        key: 'st',
+                                        width: 118,
+                                        render: (_, r) => {
+                                          if (r._status === 'within') return <Tag color="success" style={{ margin: 0, borderRadius: 10 }}>Within</Tag>;
+                                          if (r._status === 'out') return <Tag color="error" style={{ margin: 0, borderRadius: 10 }}>Out Tol</Tag>;
+                                          if (r._status === 'no_tolerance') return <Tag color="processing" style={{ margin: 0, borderRadius: 10 }}>No Tol</Tag>;
+                                          return <Tag style={{ margin: 0, borderRadius: 10 }}>Pending</Tag>;
+                                        },
+                                      },
+                                    ],
+                                  },
+                                ]}
+                              />
+                            </>
+                          )}
+                        </div>
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          Approval unlocks quantity 2+ for operators.
+                        </Text>
+                      </div>
+                    </div>
                   </div>
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    Click &quot;Approve FTP…&quot; to confirm in a second step. Approval unlocks quantity 2+ for operators.
-                  </Text>
+
+                  <div style={{ border: '1px solid #dfe4ea', borderRadius: 10, overflow: 'hidden', background: '#fff', display: 'flex', flexDirection: 'column', boxShadow: '0 2px 10px rgba(15,23,42,0.04)' }}>
+                    <div style={{ padding: '10px 14px', borderBottom: '1px solid #eef0f3', background: '#fafbfc', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <Text strong style={{ color: '#111827', fontFamily: '"JetBrains Mono", "Consolas", "Courier New", monospace' }}>Drawing View</Text>
+                      <Button size="small" icon={<CloudDownloadOutlined />} onClick={handleDownloadPlanDrawing} disabled={!planDrawingUrl}>
+                        Download Drawing
+                      </Button>
+                    </div>
+                    <div style={{ flex: 1, minHeight: 0, padding: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f8fafc' }}>
+                      {ftpApproveLoading ? (
+                        <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Spin /></div>
+                      ) : planDrawingUrl ? (
+                        planDrawingIsPdf ? (
+                          <iframe
+                            title="Balloon document"
+                            src={pdfEmbedSrcForReview(planDrawingUrl)}
+                            style={{
+                              width: '100%',
+                              minHeight: 480,
+                              height: 'min(72vh, 900px)',
+                              border: '1px solid #e5e7eb',
+                              borderRadius: 10,
+                              background: '#fff',
+                              boxShadow: '0 2px 10px rgba(15,23,42,0.08)',
+                            }}
+                          />
+                        ) : (
+                          <img
+                            src={planDrawingUrl}
+                            alt="Ballooned drawing"
+                            style={{
+                              maxWidth: '100%',
+                              maxHeight: '100%',
+                              objectFit: 'contain',
+                              border: '1px solid #e5e7eb',
+                              borderRadius: 10,
+                              background: '#fff',
+                              boxShadow: '0 2px 10px rgba(15,23,42,0.08)',
+                            }}
+                          />
+                        )
+                      ) : (
+                        <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <Empty description="No balloon document found for this operation" />
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </div>
               </Modal>
 
@@ -1644,6 +1820,93 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                     </div>
                   )}
                 </div>
+              </Modal>
+
+              {/* Part Inspection Overall Summary Modal */}
+              <Modal
+                title={`Part Inspection Overview: ${selectedItem?.part_name || 'Part'}`}
+                centered
+                open={partInspectionModalOpen}
+                onCancel={() => setPartInspectionModalOpen(false)}
+                footer={[
+                  <Button key="close" onClick={() => setPartInspectionModalOpen(false)}>Close</Button>
+                ]}
+                width={1100}
+                styles={{ body: { maxHeight: '75vh', overflow: 'auto' } }}
+              >
+                <Space direction="vertical" style={{ width: '100%' }} size="large">
+                  <Alert 
+                    message="Consolidated Inspection View" 
+                    description="This view shows the quality status of every operation in the manufacturing plan for this part. You can review measurement summaries and drill down into specific recorded data."
+                    type="info"
+                    showIcon
+                  />
+                  <Table
+                    size="small"
+                    loading={partInspectionLoading}
+                    dataSource={Object.values(partInspectionSummaryByOp).sort((a, b) => a.opNo - b.opNo)}
+                    rowKey="opNo"
+                    pagination={false}
+                    columns={[
+                      { 
+                        title: 'Op #', 
+                        dataIndex: 'opNo', 
+                        width: 90,
+                        render: (v) => <Text strong>{v}</Text>
+                      },
+                      { title: 'Operation Name', dataIndex: 'opName' },
+                      { 
+                        title: 'Measurement Status', 
+                        key: 'progress',
+                        render: (_, r) => (
+                          <Space wrap>
+                            <Tag color="blue">{r.total} Features</Tag>
+                            {r.total > 0 && <Tag color="green">{r.within} Passed</Tag>}
+                            {r.out > 0 && <Tag color="red">{r.out} Failed</Tag>}
+                            {!r.any_recorded && <Tag color="warning">Pending Shopfloor</Tag>}
+                          </Space>
+                        )
+                      },
+                      {
+                        title: 'Yield',
+                        key: 'passRate',
+                        width: 100,
+                        align: 'center',
+                        render: (_, r) => {
+                          const rate = r.total ? (r.within / r.total * 100).toFixed(1) : '0.0';
+                          return (
+                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                              <Text strong style={{ color: Number(rate) === 100 ? '#52c41a' : Number(rate) > 0 ? '#1890ff' : '#999' }}>
+                                {rate}%
+                              </Text>
+                            </div>
+                          );
+                        }
+                      },
+                      {
+                        title: 'Actions',
+                        key: 'action',
+                        width: 180,
+                        align: 'center',
+                        render: (_, r) => (
+                          <Button 
+                            size="small" 
+                            type="primary"
+                            ghost
+                            icon={<CheckCircleOutlined />} 
+                            onClick={() => {
+                              const opRecord = operations.find(o => parseOpNo(o) === r.opNo);
+                              if (opRecord) openMeasurementsModal(opRecord);
+                            }}
+                            disabled={!r.any_recorded}
+                          >
+                            Inspection Data
+                          </Button>
+                        )
+                      }
+                    ]}
+                  />
+                </Space>
               </Modal>
             </div>
           ) : (

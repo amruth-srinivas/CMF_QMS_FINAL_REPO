@@ -72,7 +72,37 @@ def _has_inspection_plan(db: Session, part_number: str, order_id: int, op_no: Op
     return bool(confirmed)
 
 
-def _first_operation_document(db: Session, operation_id: int) -> Optional[OperationDocument]:
+def _preview_operation_document(db: Session, operation_id: int) -> Optional[OperationDocument]:
+    """
+    Prefer 'balloon' documents (annotated plans) for the operator's preview.
+    Falls back to the first available document if no ballooned version exists.
+    """
+    # 1. Look for ballooned documents first (case-insensitive match on 'balloon' or 'baloon')
+    balloon_doc = (
+        db.query(OperationDocument)
+        .filter(
+            OperationDocument.operation_id == operation_id,
+            OperationDocument.document_type.ilike("%balloon%"),
+        )
+        .order_by(OperationDocument.id.desc())  # Newest balloon first
+        .first()
+    )
+    if not balloon_doc:
+        # Fallback for common typo
+        balloon_doc = (
+            db.query(OperationDocument)
+            .filter(
+                OperationDocument.operation_id == operation_id,
+                OperationDocument.document_type.ilike("%baloon%"),
+            )
+            .order_by(OperationDocument.id.desc())
+            .first()
+        )
+
+    if balloon_doc:
+        return balloon_doc
+
+    # 2. Fallback to the first document ever uploaded
     return (
         db.query(OperationDocument)
         .filter(OperationDocument.operation_id == operation_id)
@@ -116,7 +146,7 @@ def get_machine_inprogress_with_plan(machine_id: int, db: Session = Depends(get_
                     project_name = ord_row.product.product_name
 
         if isinstance(operation_id, int):
-            doc = _first_operation_document(db, operation_id)
+            doc = _preview_operation_document(db, operation_id)
             if doc:
                 preview_document_id = doc.id
                 preview_endpoint = "operation-documents"
@@ -169,6 +199,7 @@ class InspectionPlanNotificationItem(BaseModel):
     is_ack: bool
     ack_by: Optional[str] = None
     ack_at: Optional[datetime] = None
+    category: str = "plan_request"
     created_at: datetime
     updated_at: Optional[datetime] = None
 
@@ -216,6 +247,7 @@ def request_inspection_plan(body: InspectionPlanRequestBody, db: Session = Depen
             InspectionPlanNotification.order_id == body.order_id,
             InspectionPlanNotification.part_number == pn,
             InspectionPlanNotification.op_no == op_no,
+            InspectionPlanNotification.category == "plan_request",
             InspectionPlanNotification.is_ack.is_(False),
         )
         .first()
@@ -238,6 +270,7 @@ def request_inspection_plan(body: InspectionPlanRequestBody, db: Session = Depen
         operation_id=body.operation_id,
         machine_id=body.machine_id,
         requested_by_username=req_name,
+        category="plan_request",
     )
     db.add(row)
     db.commit()
@@ -281,6 +314,7 @@ def list_inspection_plan_notifications(
                 is_ack=bool(n.is_ack),
                 ack_by=n.ack_by,
                 ack_at=n.ack_at,
+                category=getattr(n, "category", "plan_request") or "plan_request",
                 created_at=n.created_at,
                 updated_at=n.updated_at,
             )

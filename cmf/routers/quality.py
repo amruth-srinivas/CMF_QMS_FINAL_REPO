@@ -4,12 +4,13 @@ Quality schema API: Master BOC (bill of characteristics) persistence aligned wit
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, or_, func
 from sqlalchemy.orm import Session
 from typing import List, Optional
 
 from DB.database import get_db
 from DB.models.quality import MasterBoc, StageInspection, Note, InspectionPlanStatus, FTP
+from DB.models.notifications import InspectionPlanNotification
 from DB.models.oms import Part, Order
 from DB.models.access_control import AccessUser
 from DB.schemas.quality_api import (
@@ -136,16 +137,43 @@ def upsert_ftp_status(body: FTPStatusUpsert, db: Session = Depends(get_db)):
     if row:
         row.status = st
         row.is_completed = bool(completed)
+        if st == "approved":
+            row.approved_by_username = body.approved_by_username
+            row.approved_at = body.approved_at or func.now()
     else:
         row = FTP(
             order_id=body.order_id,
             ipid=norm_ipid,
             status=st,
             is_completed=bool(completed),
+            approved_by_username=body.approved_by_username if st == "approved" else None,
+            approved_at=(body.approved_at or func.now()) if st == "approved" else None,
         )
         db.add(row)
     db.commit()
     db.refresh(row)
+
+    # Create notification if pending
+    if st == "pending" and body.part_number and body.op_no and body.operation_id:
+        existing_notif = db.query(InspectionPlanNotification).filter(
+            InspectionPlanNotification.order_id == body.order_id,
+            InspectionPlanNotification.part_number == body.part_number,
+            InspectionPlanNotification.op_no == body.op_no,
+            InspectionPlanNotification.category == "ftp_request",
+            InspectionPlanNotification.is_ack.is_(False)
+        ).first()
+        if not existing_notif:
+            notif = InspectionPlanNotification(
+                order_id=body.order_id,
+                part_number=body.part_number,
+                op_no=body.op_no,
+                operation_id=body.operation_id,
+                requested_by_username=body.requested_by_username,
+                category="ftp_request"
+            )
+            db.add(notif)
+            db.commit()
+
     return row
 
 

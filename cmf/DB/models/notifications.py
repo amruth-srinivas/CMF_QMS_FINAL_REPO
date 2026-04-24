@@ -22,6 +22,7 @@ class InspectionPlanNotification(Base):
     operation_id = Column(Integer, nullable=False)
     machine_id = Column(Integer, nullable=True)
     requested_by_username = Column(String(255), nullable=True)
+    category = Column(String(50), nullable=False, server_default=text("'plan_request'"))  # 'plan_request' or 'ftp_request'
 
     is_ack = Column(Boolean, nullable=False, server_default=text("false"))
     ack_by = Column(String(255), nullable=True)
