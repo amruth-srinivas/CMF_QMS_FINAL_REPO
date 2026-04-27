@@ -7,7 +7,13 @@ import { Input, Button, App, Tooltip, Empty, Spin, Tag, Typography } from "antd"
 const { Text } = Typography;
 import ProductToolsViewer from "../PDM Components/ProductToolsViewer";
 
-const QualityManagementBOM = ({ onItemSelected, onHierarchyLoaded, initialProductId = null }) => {
+const QualityManagementBOM = ({ 
+  onItemSelected, 
+  onHierarchyLoaded, 
+  initialProductId = null,
+  selectedItemId = null,
+  selectedItemType = null
+}) => {
   const { message } = App.useApp();
   const [products, setProducts] = useState([]);
   const [expandedItems, setExpandedItems] = useState({});
@@ -15,8 +21,8 @@ const QualityManagementBOM = ({ onItemSelected, onHierarchyLoaded, initialProduc
   const [loading, setLoading] = useState(true);
   const [hierarchicalData, setHierarchicalData] = useState({});
   const [originalHierarchicalData, setOriginalHierarchicalData] = useState({});
-  const [activeItemId, setActiveItemId] = useState(null);
-  const [activeItemType, setActiveItemType] = useState(null);
+  const [activeItemId, setActiveItemId] = useState(selectedItemId);
+  const [activeItemType, setActiveItemType] = useState(selectedItemType);
   const [showToolsModal, setShowToolsModal] = useState(false);
   const [selectedProductForTools, setSelectedProductForTools] = useState(null);
   const hasFetchedData = useRef(false);
@@ -54,16 +60,76 @@ const QualityManagementBOM = ({ onItemSelected, onHierarchyLoaded, initialProduc
     }
   }, []);
 
+  // Sync internal active state with props from QualityManagement
+  useEffect(() => {
+    if (selectedItemId !== activeItemId) setActiveItemId(selectedItemId);
+    if (selectedItemType !== activeItemType) setActiveItemType(selectedItemType);
+
+    // Auto-expand parents to make the selected item visible
+    if (selectedItemId && selectedItemType && !loading && Object.keys(hierarchicalData).length > 0) {
+      const keysToExpand = {};
+      
+      const trace = (node, type, path) => {
+        if (!node) return false;
+        const currentKey = getExpandKey(type, node.id);
+        
+        if (node.id === selectedItemId && type === selectedItemType) {
+          path.forEach(k => { keysToExpand[k] = true; });
+          return true;
+        }
+
+        const subAsm = node.child_assemblies || node.subassemblies || node.assemblies || [];
+        const subParts = node.parts || node.direct_parts || [];
+
+        for (const a of subAsm) {
+          if (trace(a, 'assembly', [...path, currentKey])) return true;
+        }
+        for (const p of subParts) {
+          if (trace(p, 'part', [...path, currentKey])) return true;
+        }
+        return false;
+      };
+
+      Object.keys(hierarchicalData).forEach(pid => {
+        const h = hierarchicalData[pid];
+        if (h.product) {
+          const productKey = getExpandKey('product', h.product.id);
+          // If the product itself is selected, we don't need to expand anything below it
+          if (h.product.id === selectedItemId && selectedItemType === 'product') return;
+
+          // Otherwise, search children
+          const rootAsm = h.assemblies || [];
+          const rootParts = h.parts || h.direct_parts || [];
+
+          for (const a of rootAsm) {
+            if (trace(a, 'assembly', [productKey])) break;
+          }
+          for (const p of rootParts) {
+            if (trace(p, 'part', [productKey])) break;
+          }
+        }
+      });
+
+      if (Object.keys(keysToExpand).length > 0) {
+        setExpandedItems(prev => ({ ...prev, ...keysToExpand }));
+      }
+    }
+  }, [selectedItemId, selectedItemType, loading, hierarchicalData]);
+
   useEffect(() => {
     const pid = initialProductId != null ? Number(initialProductId) : null;
-    if (!pid || loading) return;
+    const urlParams = new URLSearchParams(window.location.search);
+    const hasSavedSelection = urlParams.get('partId') || selectedItemId;
+    
+    if (!pid || loading || hasSavedSelection) return;
+    
     const product = hierarchicalData[pid]?.product || products.find(p => Number(p.id) === pid);
     if (!product) return;
     setActiveItemId(pid);
     if (onItemSelected) {
       onItemSelected({ ...product, itemType: 'product', productId: pid });
     }
-  }, [initialProductId, loading, products, hierarchicalData]);
+  }, [initialProductId, loading, products, hierarchicalData, selectedItemId]);
 
   const fetchProductHierarchy = async (productId) => {
     if (hierarchicalData[productId]) return hierarchicalData[productId];

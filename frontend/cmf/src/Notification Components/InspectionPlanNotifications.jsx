@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Table, Button, message, Spin, Empty, Tag, Input, Space, Typography, Tabs, Modal, Tooltip, Alert } from 'antd';
-import { CheckCircleOutlined, EyeOutlined, CloudDownloadOutlined, InfoCircleOutlined } from '@ant-design/icons';
+import { CheckCircleOutlined, EyeOutlined, CloudDownloadOutlined, InfoCircleOutlined, AppstoreOutlined } from '@ant-design/icons';
 
 import dayjs from 'dayjs';
 import axios from 'axios';
@@ -25,6 +26,7 @@ function pdfEmbedSrcForReview(url) {
 const InspectionPlanNotifications = ({ dateRange, onCount }) => {
   const [notifications, setNotifications] = useState([]);
   const [loading, setLoading] = useState(true);
+  const navigate = useNavigate();
 
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
@@ -113,13 +115,86 @@ const InspectionPlanNotifications = ({ dateRange, onCount }) => {
     }
   };
 
+  const handleOpenQmsSoftware = async (record) => {
+    const hideLoading = message.loading('Resolving project details...', 0);
+    try {
+      // 1. Resolve Part ID if missing
+      let partPk = record.part_id;
+      if (!partPk && record.part_number) {
+        const pRes = await axios.get(`${QUALITY_API_BASE_URL}/parts/part-number/${record.part_number}`);
+        partPk = pRes.data?.id;
+      }
+      if (!partPk) throw new Error('Could not resolve Part ID');
+
+      // 2. Resolve Operation + Drawing Details
+      const [opRes, docsRes] = await Promise.all([
+        axios.get(`${QUALITY_API_BASE_URL}/operations/${record.operation_id}`),
+        axios.get(`${QUALITY_API_BASE_URL}/operation-documents/operation/${record.operation_id}`)
+      ]);
+      const op = opRes.data;
+      const docs = Array.isArray(docsRes.data) ? docsRes.data : [];
+
+      // 3. Find 2D Drawing
+      const isDrawing = (d) => {
+        const type = (d.document_type || "").toLowerCase();
+        const name = (d.document_name || "").toLowerCase();
+        return type.includes('2d') || type.includes('drawing') || name.includes('drawing') || name.endsWith('.pdf');
+      };
+      const drawing = docs.find(isDrawing) || docs[0];
+      const drawingUrl = drawing ? `${QUALITY_API_BASE_URL}/operation-documents/${drawing.id}/preview` : '';
+      const isPdf = drawing ? (drawing.document_name || '').toLowerCase().endsWith('.pdf') : false;
+
+      // 4. Resolve Project Name (via Part -> Product)
+      let projectName = 'PROJECT';
+      try {
+        const partDetails = await axios.get(`${QUALITY_API_BASE_URL}/parts/${partPk}`);
+        const productId = partDetails.data?.productId;
+        if (productId) {
+          const prodRes = await axios.get(`${QUALITY_API_BASE_URL}/products/${productId}`);
+          projectName = prodRes.data?.product_name || 'PROJECT';
+        }
+      } catch (err) { console.warn('Project name resolution failed', err); }
+
+      const qs = new URLSearchParams({
+        partId: String(partPk),
+        partNumber: record.part_number || '',
+        orderId: String(record.order_id),
+        projectName,
+        partName: op?.part_name || 'PART',
+        operationName: op?.operation_name || `OP ${record.op_no}`,
+        operationNumber: String(record.op_no),
+        drawingUrl,
+        isPdf: String(isPdf),
+        fileName: drawing?.document_name || 'Drawing',
+        mode: 'PLAN'
+      });
+      if (drawing?.id) qs.set('documentId', String(drawing.id));
+
+      const path = window.location.pathname.startsWith('/supervisor') ? '/supervisor/qms-inspector' : '/admin/qms-inspector';
+      navigate(`${path}?${qs.toString()}`);
+    } catch (err) {
+      console.error(err);
+      message.error('Failed to resolve context for QMS Inspector');
+    } finally {
+      hideLoading();
+    }
+  };
+
   // Helper Functions for FTP Modal
   const parseNum = (value) => {
     if (value == null) return null;
     const s = String(value).replace(',', '.').trim();
     if (s === '' || s === '—' || s === '-') return null;
+    // Try direct number first
     const n = Number(s);
-    return Number.isFinite(n) ? n : null;
+    if (Number.isFinite(n)) return n;
+    // Try extracting first number (e.g. "0.5 X 45" -> 0.5)
+    const match = s.match(/[-+]?\d*\.?\d+/);
+    if (match) {
+      const mn = Number(match[0]);
+      return Number.isFinite(mn) ? mn : null;
+    }
+    return null;
   };
 
   const computeMeanFromMeasurements = (r) => {
@@ -173,9 +248,10 @@ const InspectionPlanNotifications = ({ dateRange, onCount }) => {
       const upper = parseNum(r.uppertol);
       const lower = parseNum(r.lowertol);
       const mean = computeMeanFromMeasurements(r);
-      const upperLimit = nominal != null && upper != null ? nominal + upper : null;
-      const lowerLimit = nominal != null && lower != null ? nominal + lower : null;
-      const hasTolerance = Math.abs(upper || 0) > 1e-12 || Math.abs(lower || 0) > 1e-12;
+      const upperLimit = nominal != null ? nominal + (upper || 0) : null;
+      const lowerLimit = nominal != null ? nominal + (lower || 0) : null;
+      // We consider it checkable if nominal is present
+      const hasTolerance = nominal != null;
       const withinTolerance =
         hasTolerance &&
         mean != null &&
@@ -396,15 +472,30 @@ const InspectionPlanNotifications = ({ dateRange, onCount }) => {
   const planColumns = [
     ...commonColumns,
     {
+      title: 'Approved by Name',
+      dataIndex: 'ack_by',
+      key: 'ack_by',
+      width: 150,
+      render: (t) => t || '—',
+    },
+    {
+      title: 'Approved At',
+      dataIndex: 'ack_at',
+      key: 'ack_at',
+      width: 150,
+      render: (t) => (t ? dayjs(t).format('DD/MM/YYYY HH:mm') : '—'),
+    },
+    {
       title: 'Status',
       dataIndex: 'is_ack',
       key: 'is_ack',
+      width: 120,
       render: (val) => <Tag color={val ? 'green' : 'orange'}>{val ? 'Acknowledged' : 'Pending'}</Tag>,
     },
     {
       title: 'Actions',
       key: 'actions',
-      width: 150,
+      width: 250,
       render: (_, record) => (
         <Space wrap>
           {!record.is_ack && (
@@ -412,6 +503,9 @@ const InspectionPlanNotifications = ({ dateRange, onCount }) => {
               Acknowledge
             </Button>
           )}
+          <Button icon={<AppstoreOutlined />} onClick={() => handleOpenQmsSoftware(record)}>
+            Open QMS Software
+          </Button>
         </Space>
       ),
     },
@@ -548,6 +642,11 @@ const InspectionPlanNotifications = ({ dateRange, onCount }) => {
                 dataSource={ftpApproveDecoratedRows}
                 rowKey="id"
                 pagination={false}
+                onRow={(r) => ({
+                  style: {
+                    background: r._status === 'out' ? '#fff1f0' : r._status === 'within' ? '#f6ffed' : 'inherit'
+                  }
+                })}
                 columns={[
                   {
                     title: 'Characteristic',
@@ -583,20 +682,28 @@ const InspectionPlanNotifications = ({ dateRange, onCount }) => {
                     width: 180,
                     render: (_, r) => (
                       <Space size={4} style={{ display: 'flex', flexWrap: 'wrap' }}>
-                        {[r.measured_1, r.measured_2, r.measured_3].map((v, i) => (
-                          <div key={i} style={{ 
-                            background: v ? '#f1f5f9' : '#fff', 
-                            border: '1px solid #e2e8f0', 
-                            borderRadius: 4, 
-                            padding: '1px 6px', 
-                            fontSize: 12, 
-                            minWidth: 50, 
-                            textAlign: 'center', 
-                            color: v ? '#1e293b' : '#94a3b8' 
-                          }}>
-                            {v || '—'}
-                          </div>
-                        ))}
+                        {[r.measured_1, r.measured_2, r.measured_3].map((v, i) => {
+                          const val = parseNum(v);
+                          // A value is "comparable" if limits are resolved
+                          const canCompare = r._lowerLimit != null && r._upperLimit != null;
+                          const isWithin = canCompare && val !== null && val <= r._upperLimit && val >= r._lowerLimit;
+                          const isOut = canCompare && val !== null && !isWithin;
+                          return (
+                            <div key={i} style={{ 
+                              background: isWithin ? '#f0fdf4' : isOut ? '#fef2f2' : (v ? '#f1f5f9' : '#fff'), 
+                              border: `1px solid ${isWithin ? '#bbf7d0' : isOut ? '#fecaca' : '#e2e8f0'}`, 
+                              borderRadius: 4, 
+                              padding: '1px 6px', 
+                              fontSize: 12, 
+                              minWidth: 50, 
+                              textAlign: 'center', 
+                              color: isWithin ? '#15803d' : isOut ? '#dc2626' : (v ? '#1e293b' : '#94a3b8'),
+                              fontWeight: isWithin || isOut ? 600 : 400
+                            }}>
+                              {v || '—'}
+                            </div>
+                          );
+                        })}
                       </Space>
                     ),
                   },

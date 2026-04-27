@@ -96,11 +96,19 @@ const QMSInspector = () => {
   const [viewerHeight, setViewerHeight] = useState(600);
 
   const [salesOrderId, setSalesOrderId] = useState(orderId && !Number.isNaN(Number(orderId)) ? Number(orderId) : undefined);
-  const [opNo] = useState(() => {
+  const [opNo, setOpNo] = useState(() => {
     if (opNumber == null || opNumber === '') return 10;
     const n = Number(opNumber);
     return Number.isNaN(n) ? 10 : n;
   });
+
+  // Sync opNo if query param changes (standard navigation)
+  useEffect(() => {
+    if (opNumber != null && opNumber !== '') {
+      const n = Number(opNumber);
+      if (!Number.isNaN(n)) setOpNo(n);
+    }
+  }, [opNumber]);
   const ipid = useMemo(() => {
     const pn = (partNumber || 'PART').toString().trim().replace(/[^A-Za-z0-9_-]+/g, '_');
     const op = Number.isFinite(Number(opNo)) ? Number(opNo) : 'NA';
@@ -759,6 +767,21 @@ const QMSInspector = () => {
           setPlanStatus('confirmed');
           setConfirmedByUsername(statusRes.data?.confirmed_by_username || confirmUser || null);
           message.success('Inspection plan confirmed.');
+
+          // Create notification record for this confirmation
+          try {
+            await axios.post(`${QUALITY_API_BASE_URL}/operator/request-inspection-plan`, {
+                machine_id: 0,
+                order_id: oid,
+                part_id: Number(partId),
+                operation_id: operationPk,
+                part_number: partNumber,
+                op_no: Number(opNo),
+                requested_by_username: `Plan Confirmed by ${confirmUser || 'Supervisor'}`
+            });
+          } catch (notifErr) {
+            console.warn('Silent notification creation failed', notifErr);
+          }
         } catch (err) {
           console.error(err);
           const detail = err.response?.data?.detail;
