@@ -254,144 +254,248 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
 
   const handleExportExcel = async () => {
     if (!reportPrintData) return;
-    
+
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('Inspection Report');
 
-    // Define column widths to match the template rows
+    // 13 columns mirroring the preview table structure:
+    // A=SlNo, B-C=Specified Values, D=Zone, E=Sample1, F=Sample2, G=Sample3, H=Remarks
+    // I-L used for Hardness test block (4 cols), M=trailing blank col
     worksheet.columns = [
-      { width: 18 }, // Sl No / Label 1 (A)
-      { width: 32 }, // Specified Values / Value 1 (B)
-      { width: 10 }, // Zone (C)
-      { width: 18 }, // Sample 1 / Label 2 (D)
-      { width: 15 }, // Sample 2 / Value 2 (E)
-      { width: 15 }, // Sample 3 / Value 2 (F)
-      { width: 16 }, // Remarks Label / Label 3 (G)
-      { width: 25 }, // Remarks Data / Value 3 (H)
+      { width: 8  }, // A  – Sl No
+      { width: 22 }, // B  – Specified Values (part 1)
+      { width: 10 }, // C  – Specified Values (part 2) / Zone overflow
+      { width: 10 }, // D  – Zone
+      { width: 12 }, // E  – Sample 1
+      { width: 12 }, // F  – Sample 2
+      { width: 12 }, // G  – Sample 3
+      { width: 18 }, // H  – Remarks
+      { width: 12 }, // I  – (Hardness col 1)
+      { width: 12 }, // J  – (Hardness col 2)
+      { width: 12 }, // K  – (Hardness col 3)
+      { width: 12 }, // L  – (Hardness col 4)
+      { width: 8  }, // M  – trailing blank
     ];
 
-    const borderStyle = {
-      top: { style: 'thin' },
-      left: { style: 'thin' },
-      bottom: { style: 'thin' },
-      right: { style: 'thin' }
+    const thin = { style: 'thin' };
+    const bs = { top: thin, left: thin, bottom: thin, right: thin };
+
+    const applyBorder = (cell) => { cell.border = bs; };
+    const applyBorderRange = (cols, row) => cols.forEach(c => applyBorder(worksheet.getCell(`${c}${row}`)));
+
+    const styleHeader = (cell, fontSize = 11) => {
+      cell.font = { bold: true, size: fontSize };
+      cell.alignment = { horizontal: 'center', vertical: 'middle' };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF0F0F0' } };
+      applyBorder(cell);
     };
 
-    // Header region
+    // ── Row 1-2: CMTI | INSPECTION REPORT ──────────────────────────────────────
     worksheet.mergeCells('A1:A2');
-    const cellA1 = worksheet.getCell('A1');
-    cellA1.value = 'CMTI';
-    cellA1.font = { bold: true, size: 16 };
-    cellA1.alignment = { vertical: 'middle', horizontal: 'center' };
-    cellA1.border = borderStyle;
+    const cmtiCell = worksheet.getCell('A1');
+    cmtiCell.value = 'CMTI';
+    cmtiCell.font = { bold: true, size: 16, color: { argb: 'FF003366' } };
+    cmtiCell.alignment = { horizontal: 'center', vertical: 'middle' };
+    applyBorder(cmtiCell);
 
-    worksheet.mergeCells('B1:H2');
-    const cellB1 = worksheet.getCell('B1');
-    cellB1.value = 'INSPECTION REPORT';
-    cellB1.font = { bold: true, size: 18 };
-    cellB1.alignment = { vertical: 'middle', horizontal: 'center' };
-    cellB1.border = borderStyle;
+    worksheet.mergeCells('B1:M2');
+    const titleCell = worksheet.getCell('B1');
+    titleCell.value = 'INSPECTION REPORT';
+    titleCell.font = { bold: true, size: 18 };
+    titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+    applyBorder(titleCell);
+    worksheet.getRow(1).height = 30;
+    worksheet.getRow(2).height = 20;
 
-    // Build the 4-column Meta section (Labels A, D, G; Values B-C, E-F, H)
-    const setMeta = (row, l1, v1, l2, v2, l3, v3) => {
-        const c1 = worksheet.getCell(`A${row}`);
-        c1.value = l1;
-        c1.font = { bold: true };
-        c1.alignment = { horizontal: 'right', indent: 1 };
-        
-        worksheet.mergeCells(`B${row}:C${row}`);
-        const c2 = worksheet.getCell(`B${row}`);
-        c2.value = v1;
-        c2.alignment = { horizontal: 'left', indent: 1 };
-        
-        const c3 = worksheet.getCell(`D${row}`);
-        c3.value = l2;
-        c3.font = { bold: true };
-        c3.alignment = { horizontal: 'right', indent: 1 };
-        
-        worksheet.mergeCells(`E${row}:F${row}`);
-        const c4 = worksheet.getCell(`E${row}`);
-        c4.value = v2;
-        c4.alignment = { horizontal: 'left', indent: 1 };
-        
-        const c5 = worksheet.getCell(`G${row}`);
-        c5.value = l3;
-        c5.font = { bold: true };
-        c5.alignment = { horizontal: 'right', indent: 1 };
-        
-        const c6 = worksheet.getCell(`H${row}`);
-        c6.value = v3;
-        c6.alignment = { horizontal: 'left', indent: 1 };
+    // ── Rows 3-5: Meta fields ───────────────────────────────────────────────────
+    // Preview layout (11 cols mapped to 13):
+    //  [Report No :] [     reportNo (cols B-D)    ] [Component Title:] [componentTitle(E-I)] [Date:] [date(J-M)]
+    const metaRows = [
+      { row: 3, l1: 'Report No :',   v1: reportPrintData.reportNo,       l2: 'Component Title:', v2: reportPrintData.componentTitle, l3: 'Date:',     v3: reportPrintData.date               },
+      { row: 4, l1: 'Project No.:', v1: reportPrintData.projectNo,       l2: 'Drg No:',          v2: reportPrintData.drgNo,          l3: 'Sheet',      v3: '1 of 1'                           },
+      { row: 5, l1: 'Project Name:', v1: reportPrintData.projectName,    l2: 'Quantity:',        v2: reportPrintData.totalQuantity,  l3: 'Assembly',   v3: reportPrintData.assembly           },
+    ];
 
-        ['A','B','C','D','E','F','G','H'].forEach(c => worksheet.getCell(`${c}${row}`).border = borderStyle);
-    };
+    metaRows.forEach(({ row, l1, v1, l2, v2, l3, v3 }) => {
+      const label1 = worksheet.getCell(`A${row}`);
+      label1.value = l1; label1.font = { bold: true }; label1.alignment = { horizontal: 'right', vertical: 'middle', indent: 1 }; applyBorder(label1);
 
-    setMeta(3, 'Report No :', reportPrintData.reportNo, 'Component Title:', reportPrintData.componentTitle, 'Date:', reportPrintData.date);
-    setMeta(4, 'Project No.:', reportPrintData.projectNo, 'Drg No:', reportPrintData.drgNo, 'Sheet:', '1 of 1');
-    setMeta(5, 'Project Name:', reportPrintData.projectName, 'Quantity:', reportPrintData.totalQuantity, 'Assembly:', reportPrintData.assembly);
+      worksheet.mergeCells(`B${row}:D${row}`);
+      const val1 = worksheet.getCell(`B${row}`);
+      val1.value = v1; val1.alignment = { horizontal: 'center', vertical: 'middle' }; applyBorder(val1);
+      ['C','D'].forEach(c => applyBorder(worksheet.getCell(`${c}${row}`)));
 
-    // Table Header
-    worksheet.mergeCells('A6:A7'); worksheet.getCell('A6').value = 'Sl No';
-    worksheet.mergeCells('B6:B7'); worksheet.getCell('B6').value = 'Specified Values';
-    worksheet.mergeCells('C6:C7'); worksheet.getCell('C6').value = 'Zone';
-    
-    worksheet.mergeCells('D6:F6'); worksheet.getCell('D6').value = 'Measured Values (Samples 1-3)';
-    worksheet.getCell('D7').value = '1';
-    worksheet.getCell('E7').value = '2';
-    worksheet.getCell('F7').value = '3';
-    
-    worksheet.mergeCells('G6:H7'); worksheet.getCell('G6').value = 'Remarks';
+      const label2 = worksheet.getCell(`E${row}`);
+      label2.value = l2; label2.font = { bold: true }; label2.alignment = { horizontal: 'right', vertical: 'middle', indent: 1 }; applyBorder(label2);
 
-    const headers = ['A6','A7','B6','B7','C6','C7','D6','D7','E7','F7','G6','G7','H6','H7'];
-    headers.forEach(h => {
-        const c = worksheet.getCell(h);
-        c.border = borderStyle;
-        c.font = { bold: true };
-        c.alignment = { horizontal: 'center', vertical: 'middle' };
-        c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF0F0F0' } };
+      worksheet.mergeCells(`F${row}:I${row}`);
+      const val2 = worksheet.getCell(`F${row}`);
+      val2.value = v2; val2.alignment = { horizontal: 'center', vertical: 'middle' }; applyBorder(val2);
+      ['G','H','I'].forEach(c => applyBorder(worksheet.getCell(`${c}${row}`)));
+
+      const label3 = worksheet.getCell(`J${row}`);
+      label3.value = l3; label3.font = { bold: true }; label3.alignment = { horizontal: 'right', vertical: 'middle', indent: 1 }; applyBorder(label3);
+
+      worksheet.mergeCells(`K${row}:M${row}`);
+      const val3 = worksheet.getCell(`K${row}`);
+      val3.value = v3; val3.alignment = { horizontal: 'center', vertical: 'middle' }; applyBorder(val3);
+      ['L','M'].forEach(c => applyBorder(worksheet.getCell(`${c}${row}`)));
+
+      worksheet.getRow(row).height = 18;
     });
 
-    // Content
+    // ── Rows 6-7: Table Header ─────────────────────────────────────────────────
+    // Preview: Sl No | Specified Values (2 cols) | Zone | Measured Values (3 sub cols) | Remarks
+    // Mapped: A | B-C | D | E F G | H-M (merged remarks)
+
+    worksheet.mergeCells('A6:A7');
+    styleHeader(worksheet.getCell('A6')); worksheet.getCell('A6').value = 'Sl No';
+
+    worksheet.mergeCells('B6:C7');
+    styleHeader(worksheet.getCell('B6')); worksheet.getCell('B6').value = 'Specified Values';
+    applyBorder(worksheet.getCell('C6')); applyBorder(worksheet.getCell('C7'));
+
+    worksheet.mergeCells('D6:D7');
+    styleHeader(worksheet.getCell('D6')); worksheet.getCell('D6').value = 'Zone';
+
+    worksheet.mergeCells('E6:G6');
+    styleHeader(worksheet.getCell('E6')); worksheet.getCell('E6').value = 'Measured Values';
+    applyBorder(worksheet.getCell('F6')); applyBorder(worksheet.getCell('G6'));
+
+    worksheet.getCell('E7').value = '1'; styleHeader(worksheet.getCell('E7'));
+    worksheet.getCell('F7').value = '2'; styleHeader(worksheet.getCell('F7'));
+    worksheet.getCell('G7').value = '3'; styleHeader(worksheet.getCell('G7'));
+
+    worksheet.mergeCells('H6:M7');
+    styleHeader(worksheet.getCell('H6')); worksheet.getCell('H6').value = 'Remarks';
+    ['I','J','K','L','M'].forEach(c => { applyBorder(worksheet.getCell(`${c}6`)); applyBorder(worksheet.getCell(`${c}7`)); });
+
+    worksheet.getRow(6).height = 18;
+    worksheet.getRow(7).height = 18;
+
+    // ── Rows 8+: Data rows ─────────────────────────────────────────────────────
     let cur = 8;
     reportPrintData.rows.forEach(r => {
-        worksheet.getCell(`A${cur}`).value = r.sno;
-        worksheet.getCell(`B${cur}`).value = r.specified;
-        worksheet.getCell(`C${cur}`).value = r.zone;
-        worksheet.getCell(`D${cur}`).value = r.measurements[0];
-        worksheet.getCell(`E${cur}`).value = r.measurements[1];
-        worksheet.getCell(`F${cur}`).value = r.measurements[2];
-        worksheet.mergeCells(`G${cur}:H${cur}`);
-        worksheet.getCell(`G${cur}`).value = r.remarks;
+      worksheet.getCell(`A${cur}`).value = r.sno;
+      worksheet.mergeCells(`B${cur}:C${cur}`);
+      worksheet.getCell(`B${cur}`).value = r.specified;
+      worksheet.getCell(`D${cur}`).value = r.zone;
+      worksheet.getCell(`E${cur}`).value = r.measurements[0] !== '' ? r.measurements[0] : '';
+      worksheet.getCell(`F${cur}`).value = r.measurements[1] !== '' ? r.measurements[1] : '';
+      worksheet.getCell(`G${cur}`).value = r.measurements[2] !== '' ? r.measurements[2] : '';
+      worksheet.mergeCells(`H${cur}:M${cur}`);
+      worksheet.getCell(`H${cur}`).value = r.remarks || '';
 
-        ['A','B','C','D','E','F','G','H'].forEach(col => {
-            const c = worksheet.getCell(`${col}${cur}`);
-            c.border = borderStyle;
-            c.alignment = { horizontal: 'center' };
-        });
-        cur++;
+      ['A','B','C','D','E','F','G','H','I','J','K','L','M'].forEach(col => {
+        const c = worksheet.getCell(`${col}${cur}`);
+        c.border = bs;
+        c.alignment = { horizontal: 'center', vertical: 'middle' };
+      });
+      worksheet.getRow(cur).height = 18;
+      cur++;
     });
 
-    // Min rows
-    while (cur < 25) {
-        worksheet.getCell(`A${cur}`).value = cur - 7;
-        worksheet.mergeCells(`G${cur}:H${cur}`);
-        ['A','B','C','D','E','F','G','H'].forEach(col => worksheet.getCell(`${col}${cur}`).border = borderStyle);
-        cur++;
+    // Fill minimum 30 data rows
+    const minDataRows = 30;
+    const filledRows = reportPrintData.rows.length;
+    for (let extra = filledRows; extra < minDataRows; extra++) {
+      worksheet.getCell(`A${cur}`).value = extra + 1;
+      worksheet.mergeCells(`B${cur}:C${cur}`);
+      worksheet.mergeCells(`H${cur}:M${cur}`);
+      ['A','B','C','D','E','F','G','H','I','J','K','L','M'].forEach(col => {
+        const c = worksheet.getCell(`${col}${cur}`);
+        c.border = bs;
+        c.alignment = { horizontal: 'center', vertical: 'middle' };
+      });
+      worksheet.getRow(cur).height = 18;
+      cur++;
     }
 
-    // Signatures
-    cur += 1;
-    worksheet.mergeCells(`A${cur}:D${cur + 2}`);
-    const s1 = worksheet.getCell(`A${cur}`);
-    s1.value = `Inspected by:\nShopfloor Operator`;
-    s1.alignment = { wrapText: true, vertical: 'top' };
-    s1.border = borderStyle;
+    // ── Chemical / Ultrasonic / Hardness Test block ────────────────────────────
+    // Preview: 3 sections side-by-side, each 4 columns wide + 1 trailing blank col
+    // Mapped to 13 cols: Chemical=A-D, Ultrasonic=E-H, Hardness=I-L, Blank=M
 
-    worksheet.mergeCells(`E${cur}:H${cur + 2}`);
-    const s2 = worksheet.getCell(`E${cur}`);
-    s2.value = `Checked by:\n${reportPrintData.approvedBy}`;
-    s2.alignment = { wrapText: true, vertical: 'top' };
-    s2.border = borderStyle;
+    const testTitleRow = cur;
+    worksheet.mergeCells(`A${testTitleRow}:D${testTitleRow}`);
+    const chemTitle = worksheet.getCell(`A${testTitleRow}`);
+    chemTitle.value = 'Chemical Test';
+    chemTitle.font = { bold: true }; chemTitle.alignment = { horizontal: 'center', vertical: 'middle' };
+    applyBorder(chemTitle); ['B','C','D'].forEach(c => applyBorder(worksheet.getCell(`${c}${testTitleRow}`)));
+
+    worksheet.mergeCells(`E${testTitleRow}:H${testTitleRow}`);
+    const ultTitle = worksheet.getCell(`E${testTitleRow}`);
+    ultTitle.value = 'Ultrasonic Test';
+    ultTitle.font = { bold: true }; ultTitle.alignment = { horizontal: 'center', vertical: 'middle' };
+    applyBorder(ultTitle); ['F','G','H'].forEach(c => applyBorder(worksheet.getCell(`${c}${testTitleRow}`)));
+
+    worksheet.mergeCells(`I${testTitleRow}:L${testTitleRow}`);
+    const hardTitle = worksheet.getCell(`I${testTitleRow}`);
+    hardTitle.value = 'Hardness Test';
+    hardTitle.font = { bold: true }; hardTitle.alignment = { horizontal: 'center', vertical: 'middle' };
+    applyBorder(hardTitle); ['J','K','L'].forEach(c => applyBorder(worksheet.getCell(`${c}${testTitleRow}`)));
+
+    applyBorder(worksheet.getCell(`M${testTitleRow}`));
+    worksheet.getRow(testTitleRow).height = 18;
+    cur++;
+
+    // Helper: write one row of the test block
+    //   chemLabel | chemVal | blank | blank | ultLabel | ultVal | blank | blank | hardLabel | hardVal | blank | blank | blank
+    const writeTestRow = (row, chemL, ultL, hardL) => {
+      const setTestCell = (col, val, bold = false) => {
+        const c = worksheet.getCell(`${col}${row}`);
+        c.value = val;
+        if (bold) c.font = { bold: true };
+        c.alignment = { horizontal: bold ? 'right' : 'left', vertical: 'middle', indent: 1 };
+        applyBorder(c);
+      };
+      setTestCell('A', chemL, true);
+      setTestCell('B', ''); applyBorder(worksheet.getCell(`B${row}`));
+      worksheet.mergeCells(`C${row}:D${row}`);
+      applyBorder(worksheet.getCell(`C${row}`)); applyBorder(worksheet.getCell(`D${row}`));
+
+      setTestCell('E', ultL, true);
+      setTestCell('F', ''); applyBorder(worksheet.getCell(`F${row}`));
+      worksheet.mergeCells(`G${row}:H${row}`);
+      applyBorder(worksheet.getCell(`G${row}`)); applyBorder(worksheet.getCell(`H${row}`));
+
+      setTestCell('I', hardL, true);
+      setTestCell('J', ''); applyBorder(worksheet.getCell(`J${row}`));
+      worksheet.mergeCells(`K${row}:L${row}`);
+      applyBorder(worksheet.getCell(`K${row}`)); applyBorder(worksheet.getCell(`L${row}`));
+
+      applyBorder(worksheet.getCell(`M${row}`));
+      worksheet.getRow(row).height = 18;
+    };
+
+    writeTestRow(cur,     'Date',           'Date',           'Date');          cur++;
+    writeTestRow(cur,     'Report No',      'Report No',      'W.O.NO');        cur++;
+    writeTestRow(cur,     'Authoriser',     'Authoriser',     'Hardness Value'); cur++;
+    writeTestRow(cur,     'Status',         'Status',         'Status');         cur++;
+
+    // ── Signatures row ─────────────────────────────────────────────────────────
+    const sigRow = cur;
+    worksheet.mergeCells(`A${sigRow}:C${sigRow + 1}`);
+    const sig1 = worksheet.getCell(`A${sigRow}`);
+    sig1.value = `Inspected by:\n\nShopfloor Operator`;
+    sig1.font = { bold: false };
+    sig1.alignment = { wrapText: true, vertical: 'top', horizontal: 'left', indent: 1 };
+    applyBorder(sig1);
+    ['B','C'].forEach(c => { applyBorder(worksheet.getCell(`${c}${sigRow}`)); applyBorder(worksheet.getCell(`${c}${sigRow + 1}`)); });
+
+    worksheet.mergeCells(`D${sigRow}:J${sigRow + 1}`);
+    const sig2 = worksheet.getCell(`D${sigRow}`);
+    sig2.value = `Checked by:\n\n${reportPrintData.approvedBy}`;
+    sig2.font = { bold: false };
+    sig2.alignment = { wrapText: true, vertical: 'top', horizontal: 'left', indent: 1 };
+    applyBorder(sig2);
+    ['E','F','G','H','I','J'].forEach(c => { applyBorder(worksheet.getCell(`${c}${sigRow}`)); applyBorder(worksheet.getCell(`${c}${sigRow + 1}`)); });
+
+    worksheet.mergeCells(`K${sigRow}:M${sigRow + 1}`);
+    applyBorder(worksheet.getCell(`K${sigRow}`));
+    ['L','M'].forEach(c => { applyBorder(worksheet.getCell(`${c}${sigRow}`)); applyBorder(worksheet.getCell(`${c}${sigRow + 1}`)); });
+
+    worksheet.getRow(sigRow).height = 22;
+    worksheet.getRow(sigRow + 1).height = 22;
 
     const buffer = await workbook.xlsx.writeBuffer();
     const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });

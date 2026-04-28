@@ -24,6 +24,9 @@ const InspectorHeader = ({
   confirmPlanDisabled = false,
   measureOnly = false,
   hideTopActions = false,
+  showApproveFtp = false,
+  onApproveFtp = null,
+  approveFtpDisabled = false,
 }) => {
   const navigate = useNavigate();
 
@@ -119,7 +122,7 @@ const InspectorHeader = ({
           </div>
         )}
 
-        {!measureOnly && planStatus === 'confirmed' && (
+        {planStatus === 'confirmed' && (
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2, maxWidth: 220 }}>
             <Tag color="success" style={{ margin: 0 }}>
               Plan confirmed
@@ -140,6 +143,16 @@ const InspectorHeader = ({
             disabled={confirmPlanDisabled}
           >
             Confirm plan
+          </Button>
+        )}
+        {showApproveFtp && (
+          <Button
+            type="primary"
+            style={{ height: '36px' }}
+            disabled={approveFtpDisabled}
+            onClick={onApproveFtp}
+          >
+            Approve FTP
           </Button>
         )}
         {!hideTopActions && (

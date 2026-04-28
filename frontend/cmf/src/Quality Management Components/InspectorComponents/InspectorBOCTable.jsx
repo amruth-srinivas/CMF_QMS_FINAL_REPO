@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import { Table, Tag, Typography, Space, Button, Empty, Popover, Select, Divider, Input } from 'antd';
-import { FilterOutlined, SettingOutlined, UnorderedListOutlined } from '@ant-design/icons';
+import { FilterOutlined, UnorderedListOutlined } from '@ant-design/icons';
 
 const { Text } = Typography;
 
@@ -594,17 +594,11 @@ const InspectorBOCTable = ({
             <Button
               size="small"
               type={filterActive ? 'primary' : 'text'}
-              ghost={filterActive}
               icon={
-                <FilterOutlined style={{ fontSize: 14, color: filterActive ? '#fff' : '#64748b' }} />
+                <FilterOutlined style={{ fontSize: 14, color: filterActive ? undefined : '#64748b' }} />
               }
             />
           </Popover>
-          <Button
-            size="small"
-            type="text"
-            icon={<SettingOutlined style={{ fontSize: 14, color: '#64748b' }} />}
-          />
         </Space>
       </div>
 

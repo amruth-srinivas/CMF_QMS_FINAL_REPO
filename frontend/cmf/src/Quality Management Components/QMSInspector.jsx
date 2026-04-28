@@ -134,6 +134,7 @@ const QMSInspector = () => {
 
   const [stageRows, setStageRows] = useState([]);
   const [ftpStatus, setFtpStatus] = useState(null);
+  const [ftpApprovedByUsername, setFtpApprovedByUsername] = useState(null);
   const ftpApproved = ftpStatus === 'approved';
   const [activeTab, setActiveTab] = useState('characteristics');
   const [notes, setNotes] = useState([]);
@@ -289,6 +290,7 @@ const QMSInspector = () => {
         params: { order_id: oid, ipid, op_no: opNo },
       });
       setFtpStatus(res.data?.status || null);
+      setFtpApprovedByUsername(res.data?.approved_by_username || null);
     } catch {
       setFtpStatus(null);
     }
@@ -455,7 +457,7 @@ const QMSInspector = () => {
         is_completed: false,
         part_number: partNumber,
         op_no: opNo,
-        operation_id: Number(operationId),
+        operation_id: operationId ? Number(operationId) : 0,
         requested_by_username: reqUsername || undefined,
       });
       await refreshFtpStatus();
@@ -465,7 +467,41 @@ const QMSInspector = () => {
       const detail = err.response?.data?.detail;
       message.error(typeof detail === 'string' ? detail : err.message || 'Failed to request FTP approval');
     }
-  }, [salesOrderId, firstQtyAllDone, ipid, refreshFtpStatus, message]);
+  }, [salesOrderId, firstQtyAllDone, ipid, refreshFtpStatus, message, partNumber, opNo, operationId]);
+
+  const handleApproveFtpDirect = useCallback(async () => {
+    const oid = Number(salesOrderId);
+    if (!oid || Number.isNaN(oid)) {
+      message.error('Order is required for FTP approval.');
+      return;
+    }
+    try {
+      let reqUsername = '';
+      try {
+        const u = JSON.parse(localStorage.getItem('user') || '{}');
+        reqUsername = (u.user_name || u.username || '').trim();
+      } catch {
+        reqUsername = 'supervisor';
+      }
+
+      await axios.put(`${QUALITY_API_BASE_URL}/quality/ftp-status`, {
+        order_id: oid,
+        ipid,
+        status: 'approved',
+        is_completed: true,
+        part_number: partNumber,
+        op_no: opNo,
+        operation_id: operationId ? Number(operationId) : 0,
+        approved_by_username: reqUsername || undefined,
+      });
+      await refreshFtpStatus();
+      message.success('FTP approved successfully.');
+    } catch (err) {
+      console.error(err);
+      const detail = err.response?.data?.detail;
+      message.error(typeof detail === 'string' ? detail : err.message || 'Failed to approve FTP');
+    }
+  }, [salesOrderId, firstQtyAllDone, ipid, refreshFtpStatus, message, partNumber, opNo, operationId]);
 
   /** Drop selection for rows that disappeared (filters / reload). */
   useEffect(() => {
@@ -708,12 +744,17 @@ const QMSInspector = () => {
 
   const handleConfirmPlan = useCallback(() => {
     const oid = Number(salesOrderId);
-    const operationPk = Number(operationId);
+    const opIdStr = searchParams.get('operationId');
+    const opIdInt = opIdStr ? parseInt(opIdStr, 10) : 0;
+    const opNoStr = searchParams.get('operationNumber');
+    const opNoInt = opNoStr != null ? parseInt(opNoStr, 10) : 10;
+    const isFinalPart = opNoInt === 0;
+
     if (!partNumber || !oid) {
       message.error('Order and part are required.');
       return;
     }
-    if (!Number.isFinite(operationPk)) {
+    if (!isFinalPart && (!opIdInt || opIdInt <= 0)) {
       message.error('Operation is required to store ballooned drawing.');
       return;
     }
@@ -721,10 +762,10 @@ const QMSInspector = () => {
       message.warning('Add at least one characteristic before confirming the plan.');
       return;
     }
+
     Modal.confirm({
       title: 'Confirm inspection plan?',
-      content:
-        'After confirmation, the inspection plan is locked.',
+      content: 'After confirmation, the inspection plan is locked.',
       okText: 'Confirm',
       onOk: async () => {
         try {
@@ -736,16 +777,20 @@ const QMSInspector = () => {
           if (!blob) {
             throw new Error('Failed to build balloon PDF.');
           }
-          const fd = new FormData();
-          const safePart = (partNumber || 'part').replace(/[^a-zA-Z0-9_-]+/g, '_');
-          const fileName = `${safePart}_op${opNo}_balloon.pdf`;
-          fd.append('operation_id', String(operationPk));
-          fd.append('document_type', 'Balloon document');
-          fd.append('document_version', '1.0');
-          fd.append('files', new File([blob], fileName, { type: 'application/pdf' }));
-          await axios.post(`${QUALITY_API_BASE_URL}/operation-documents/upload/`, fd, {
-            headers: { 'Content-Type': 'multipart/form-data' },
-          });
+
+          // Only upload if it's a REAL operation (not op 0) and has a valid ID
+          if (!isFinalPart && opIdInt > 0) {
+            const fd = new FormData();
+            const safePart = (partNumber || 'part').replace(/[^a-zA-Z0-9_-]+/g, '_');
+            const fileName = `${safePart}_op${opNoInt}_balloon.pdf`;
+            fd.append('operation_id', String(opIdInt));
+            fd.append('document_type', 'Balloon document');
+            fd.append('document_version', '1.0');
+            fd.append('files', new File([blob], fileName, { type: 'application/pdf' }));
+            await axios.post(`${QUALITY_API_BASE_URL}/operation-documents/upload/`, fd, {
+              headers: { 'Content-Type': 'multipart/form-data' },
+            });
+          }
 
           let confirmUser = '';
           try {
@@ -757,27 +802,31 @@ const QMSInspector = () => {
           if (!confirmUser) {
             message.warning('Could not read your username. Confirming without a named user.');
           }
-          const statusRes = await axios.put(`${QUALITY_API_BASE_URL}/quality/inspection-plan-status`, {
+
+          await axios.put(`${QUALITY_API_BASE_URL}/quality/inspection-plan-status`, {
             part_number: partNumber,
             sales_order_id: oid,
-            op_no: opNo,
+            op_no: opNoInt,
             status: 'confirmed',
-            confirmed_by_username: confirmUser || undefined,
+            confirmed_by_username: confirmUser,
           });
+
+          message.success('Inspection plan confirmed and released to operators.');
           setPlanStatus('confirmed');
-          setConfirmedByUsername(statusRes.data?.confirmed_by_username || confirmUser || null);
-          message.success('Inspection plan confirmed.');
+          setConfirmedByUsername(confirmUser);
+          await fetchMasterBoc();
+          await refreshMeasurementSummary();
 
           // Create notification record for this confirmation
           try {
             await axios.post(`${QUALITY_API_BASE_URL}/operator/request-inspection-plan`, {
-                machine_id: 0,
-                order_id: oid,
-                part_id: Number(partId),
-                operation_id: operationPk,
-                part_number: partNumber,
-                op_no: Number(opNo),
-                requested_by_username: `Plan Confirmed by ${confirmUser || 'Supervisor'}`
+              machine_id: 0,
+              order_id: oid,
+              part_id: Number(partId),
+              operation_id: opIdInt,
+              part_number: partNumber,
+              op_no: opNoInt,
+              requested_by_username: `Plan Confirmed by ${confirmUser || 'Supervisor'}`,
             });
           } catch (notifErr) {
             console.warn('Silent notification creation failed', notifErr);
@@ -785,12 +834,11 @@ const QMSInspector = () => {
         } catch (err) {
           console.error(err);
           const detail = err.response?.data?.detail;
-          message.error(typeof detail === 'string' ? detail : err.message || 'Failed to confirm');
-          throw err;
+          message.error(typeof detail === 'string' ? detail : err.message || 'Failed to confirm plan');
         }
       },
     });
-  }, [partNumber, salesOrderId, operationId, opNo, bocRowsRaw.length, message]);
+  }, [salesOrderId, partNumber, partId, searchParams, bocRowsRaw.length, message, fetchMasterBoc, refreshMeasurementSummary]);
 
   useEffect(() => {
     if (!bocRowsRaw.length || !partId || !documentId || bocEditLocked) return;
@@ -1027,6 +1075,9 @@ const QMSInspector = () => {
         confirmPlanDisabled={!bocRowsRaw.length || !salesOrderId || !partNumber}
         measureOnly={isOperatorView}
         hideTopActions={isOperatorView}
+        showApproveFtp={!isOperatorView && opNo === 0 && !ftpApproved}
+        onApproveFtp={handleApproveFtpDirect}
+        approveFtpDisabled={quantityNo !== 1}
       />
 
       {/* Plain divs — Ant Sider's internal wrapper breaks flex height chains */}
@@ -1113,23 +1164,29 @@ const QMSInspector = () => {
           }}
         >
           {inspectorMode === 'MEASURE' && (
-            <div style={{ marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-              <Space>
-                <Tag color={ftpApproved ? 'success' : ftpStatus === 'pending' ? 'processing' : 'default'}>
+            <div style={{ marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <Space wrap>
+                <Tag 
+                  color={ftpApproved ? 'success' : ftpStatus === 'pending' ? 'processing' : 'default'}
+                  style={{ minWidth: 100, textAlign: 'center' }}
+                >
                   FTP: {ftpStatus ? ftpStatus.toUpperCase() : 'NOT REQUESTED'}
+                  {ftpApproved ? ` (by ${ftpApprovedByUsername || confirmedByUsername || 'Supervisor'})` : ''}
                 </Tag>
                 {quantityNo > 1 && !ftpApproved ? (
                   <Tag color="warning">Quantity {quantityNo} locked until FTP approval</Tag>
                 ) : null}
               </Space>
-              <Button
-                size="small"
-                type="primary"
-                disabled={quantityNo !== 1 || ftpApproved || !firstQtyAllDone}
-                onClick={() => void handleRequestFtpApproval()}
-              >
-                Approve FTP
-              </Button>
+              {isOperatorView && (
+                <Button
+                  size="small"
+                  type="primary"
+                  disabled={quantityNo !== 1 || ftpApproved || !firstQtyAllDone}
+                  onClick={() => void handleRequestFtpApproval()}
+                >
+                  Submit Request for FTP
+                </Button>
+              )}
             </div>
           )}
           <Tabs
@@ -1169,6 +1226,7 @@ const QMSInspector = () => {
                   <InspectorNotesTable
                     notes={notes}
                     loading={notesLoading}
+                    readOnly={isOperatorView}
                     onAddNote={async (noteText) => {
                       const pid = partId ? Number(partId) : null;
                       if (!pid || !documentId) return;
@@ -1188,11 +1246,11 @@ const QMSInspector = () => {
                       await axios.put(`${QUALITY_API_BASE_URL}/quality/notes/${noteId}`, { note_text: noteText });
                       await loadNotes();
                     }}
-                    onDeleteNote={async (noteId) => {
+                    onDeleteNote={isOperatorView ? undefined : async (noteId) => {
                       await axios.delete(`${QUALITY_API_BASE_URL}/quality/notes/${noteId}`);
                       await loadNotes();
                     }}
-                    onDeleteAll={async () => {
+                    onDeleteAll={isOperatorView ? undefined : async () => {
                       const pid = partId ? Number(partId) : null;
                       if (!pid) return;
                       await axios.delete(`${QUALITY_API_BASE_URL}/quality/notes/part/${pid}`);

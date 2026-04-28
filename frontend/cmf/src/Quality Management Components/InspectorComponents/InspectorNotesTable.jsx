@@ -6,6 +6,7 @@ const { Text } = Typography;
 const InspectorNotesTable = ({
   notes = [],
   loading = false,
+  readOnly = false,
   onAddNote,
   onUpdateNote,
   onDeleteNote,
@@ -26,101 +27,115 @@ const InspectorNotesTable = ({
     [notes],
   );
 
-  const cols = [
-    { title: '#', dataIndex: 'index', key: 'index', width: 46, align: 'center' },
-    {
-      title: 'NOTE',
-      dataIndex: 'text',
-      key: 'text',
-      render: (text, row) =>
-        editingId === row.id ? (
-          <Input.TextArea value={editingText} autoSize={{ minRows: 2, maxRows: 4 }} onChange={(e) => setEditingText(e.target.value)} />
-        ) : (
-          <Text style={{ fontSize: 12 }}>{text || '—'}</Text>
-        ),
-    },
-    {
-      title: 'ACTIONS',
-      key: 'actions',
-      width: 140,
-      align: 'center',
-      render: (_, row) =>
-        editingId === row.id ? (
-          <Space size={4}>
-            <Button
-              size="small"
-              type="primary"
-              onClick={() => {
-                onUpdateNote?.(row.id, editingText);
-                setEditingId(null);
-                setEditingText('');
-              }}
-            >
-              Save
-            </Button>
-            <Button size="small" onClick={() => setEditingId(null)}>
-              Cancel
-            </Button>
-          </Space>
-        ) : (
-          <Space size={4}>
-            <Button
-              size="small"
-              onClick={() => {
-                setEditingId(row.id);
-                setEditingText(row.text || '');
-              }}
-            >
-              Edit
-            </Button>
-            <Popconfirm title="Delete this note?" onConfirm={() => onDeleteNote?.(row.id)}>
-              <Button size="small" danger>
-                Delete
+  const cols = useMemo(() => {
+    const baseCols = [
+      { title: '#', dataIndex: 'index', key: 'index', width: 46, align: 'center' },
+      {
+        title: 'NOTE',
+        dataIndex: 'text',
+        key: 'text',
+        render: (text, row) =>
+          editingId === row.id ? (
+            <Input.TextArea value={editingText} autoSize={{ minRows: 2, maxRows: 4 }} onChange={(e) => setEditingText(e.target.value)} />
+          ) : (
+            <Text style={{ fontSize: 12 }}>{text || '—'}</Text>
+          ),
+      },
+    ];
+
+    if (readOnly) return baseCols;
+
+    return [
+      ...baseCols,
+      {
+        title: 'ACTIONS',
+        key: 'actions',
+        width: 140,
+        align: 'center',
+        render: (_, row) =>
+          editingId === row.id ? (
+            <Space size={4}>
+              <Button
+                size="small"
+                type="primary"
+                onClick={() => {
+                  onUpdateNote?.(row.id, editingText);
+                  setEditingId(null);
+                  setEditingText('');
+                }}
+              >
+                Save
               </Button>
-            </Popconfirm>
-          </Space>
-        ),
-    },
-  ];
+              <Button size="small" onClick={() => setEditingId(null)}>
+                Cancel
+              </Button>
+            </Space>
+          ) : (
+            <Space size={4}>
+              <Button
+                size="small"
+                onClick={() => {
+                  setEditingId(row.id);
+                  setEditingText(row.text || '');
+                }}
+              >
+                Edit
+              </Button>
+              {onDeleteNote && (
+                <Popconfirm title="Delete this note?" onConfirm={() => onDeleteNote?.(row.id)}>
+                  <Button size="small" danger>
+                    Delete
+                  </Button>
+                </Popconfirm>
+              )}
+            </Space>
+          ),
+      },
+    ];
+  }, [editingId, editingText, onUpdateNote, onDeleteNote, readOnly]);
 
   return (
     <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', background: '#fff' }}>
-      <div style={{ padding: '6px 8px', borderBottom: '1px solid #f0f0f0' }}>
-        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
-          <Space.Compact style={{ flex: 1, minWidth: 160 }}>
-            <Input
-              placeholder="Add note..."
-              value={newNoteText}
-              onChange={(e) => setNewNoteText(e.target.value)}
-              onPressEnter={() => {
-                const t = (newNoteText || '').trim();
-                if (!t) return;
-                onAddNote?.(t);
-                setNewNoteText('');
-              }}
-            />
-            <Button
-              type="primary"
-              onClick={() => {
-                const t = (newNoteText || '').trim();
-                if (!t) return;
-                onAddNote?.(t);
-                setNewNoteText('');
-              }}
-            >
-              Add
-            </Button>
-          </Space.Compact>
-          <Popconfirm title={`Delete all ${notes.length} notes?`} onConfirm={() => onDeleteAll?.()} disabled={!notes.length}>
-            <Button size="small" danger disabled={!notes.length}>
-              Delete all
-            </Button>
-          </Popconfirm>
+      {!readOnly && (
+        <div style={{ padding: '6px 8px', borderBottom: '1px solid #f0f0f0' }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
+            <Space.Compact style={{ flex: 1, minWidth: 160 }}>
+              <Input
+                placeholder="Add note..."
+                value={newNoteText}
+                onChange={(e) => setNewNoteText(e.target.value)}
+                onPressEnter={() => {
+                  const t = (newNoteText || '').trim();
+                  if (!t) return;
+                  onAddNote?.(t);
+                  setNewNoteText('');
+                }}
+              />
+              <Button
+                type="primary"
+                onClick={() => {
+                  const t = (newNoteText || '').trim();
+                  if (!t) return;
+                  onAddNote?.(t);
+                  setNewNoteText('');
+                }}
+              >
+                Add
+              </Button>
+            </Space.Compact>
+            {onDeleteAll && (
+              <Popconfirm title={`Delete all ${notes.length} notes?`} onConfirm={() => onDeleteAll?.()} disabled={!notes.length}>
+                <Button size="small" danger disabled={!notes.length}>
+                  Delete all
+                </Button>
+              </Popconfirm>
+            )}
+          </div>
         </div>
-      </div>
+      )}
       <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
         {data.length === 0 ? (
-          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No notes yet. Use Notes tool to draw and extract notes." style={{ marginTop: 24 }} />
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={readOnly ? "No notes from supervisor" : "No notes yet. Use Notes tool to draw and extract notes."} style={{ marginTop: 24 }} />
         ) : (
           <Table columns={cols} dataSource={data} size="small" bordered pagination={false} loading={loading} />
         )}
