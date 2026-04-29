@@ -1077,7 +1077,7 @@ const QMSInspector = () => {
         hideTopActions={isOperatorView}
         showApproveFtp={!isOperatorView && opNo === 0 && !ftpApproved}
         onApproveFtp={handleApproveFtpDirect}
-        approveFtpDisabled={quantityNo !== 1}
+        approveFtpDisabled={quantityNo !== 1 || planStatus !== 'confirmed' || !firstQtyAllDone}
       />
 
       {/* Plain divs — Ant Sider's internal wrapper breaks flex height chains */}

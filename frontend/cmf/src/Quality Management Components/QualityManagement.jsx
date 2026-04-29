@@ -912,6 +912,16 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
     return ftpApproveRows.every((r) => !rowHasMeasured123(r));
   }, [ftpApproveRows]);
 
+  const ftpApproveMeasurementsDone = useMemo(() => {
+    if (!ftpApproveRows?.length) return false;
+    return ftpApproveRows.every((r) => {
+      const a = parseNum(r.measured_1);
+      const b = parseNum(r.measured_2);
+      const c = parseNum(r.measured_3);
+      return a != null && b != null && c != null;
+    });
+  }, [ftpApproveRows]);
+
   const ftpApproveSummary = useMemo(() => {
     const total = ftpApproveDecoratedRows.length;
     const within = ftpApproveDecoratedRows.filter((r) => r._status === 'within').length;
@@ -1672,6 +1682,16 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
 
                                     <Button 
                                       size="small" 
+                                      type="primary" 
+                                      ghost 
+                                      icon={<FilePdfOutlined />} 
+                                      onClick={() => handleGenerateReport(record)}
+                                    >
+                                      Generate Report
+                                    </Button>
+
+                                    <Button 
+                                      size="small" 
                                       icon={<EyeOutlined />} 
                                       onClick={() => handlePreviewOperation(record)}
                                       title="View Drawing"
@@ -1684,59 +1704,6 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                               },
                             ]}
                           />
-                        ),
-                      },
-                      {
-                        key: '2',
-                        label: 'Inspection Report',
-                        children: (
-                          <div style={{ maxWidth: '800px' }}>
-                            <Table 
-                              loading={loadingDetails}
-                              dataSource={operations}
-                              rowKey="id"
-                              pagination={false}
-                              columns={[
-                                {
-                                  title: 'Op #',
-                                  dataIndex: 'operation_number',
-                                  key: 'operation_number',
-                                  width: 80,
-                                  render: val => <Text strong style={{ color: '#1890ff' }}>{val}</Text>
-                                },
-                                {
-                                  title: 'Operation Name',
-                                  dataIndex: 'operation_name',
-                                  key: 'operation_name',
-                                },
-                                {
-                                  title: 'Approved by',
-                                  key: 'approved_by',
-                                  render: (_, record) => {
-                                    const opNo = parseOpNo(record);
-                                    const who = inspectionPlanConfirmedByOp[opNo];
-                                    return who ? <Text>{who}</Text> : <Text type="secondary">—</Text>;
-                                  },
-                                },
-                                {
-                                  title: 'Actions',
-                                  key: 'report_actions',
-                                  align: 'center',
-                                  render: (_, record) => (
-                                    <Button 
-                                      type="primary" 
-                                      ghost 
-                                      icon={<FilePdfOutlined />} 
-                                      onClick={() => handleGenerateReport(record)}
-                                      style={{ borderRadius: '6px' }}
-                                    >
-                                      Generate Report
-                                    </Button>
-                                  ),
-                                },
-                              ]}
-                            />
-                          </div>
                         ),
                       },
                     ]}
@@ -2063,7 +2030,8 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                         ftpApproveLoading ||
                         !ftpApproveContext ||
                         ftpApproveDecoratedRows.length === 0 ||
-                        ftpApproveAllReadingsEmpty
+                        !ftpApproveMeasurementsDone ||
+                        inspectionPlanByOp[ftpApproveContext?.opNo] !== 'confirmed'
                       }
                       onClick={() => confirmAndApproveFtp()}
                     >
