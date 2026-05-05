@@ -1088,8 +1088,13 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
   }, [ftpApproveRows]);
 
   const ftpApproveMeasurementsDone = useMemo(() => {
-    // Relaxed: Allow supervisor to approve even if some measurements are missing or "wrong"
-    return ftpApproveRows?.length > 0;
+    if (!ftpApproveRows?.length) return false;
+    return ftpApproveRows.every((r) => {
+      const a = parseNum(r.measured_1);
+      const b = parseNum(r.measured_2);
+      const c = parseNum(r.measured_3);
+      return a != null && b != null && c != null;
+    });
   }, [ftpApproveRows]);
 
   const ftpApproveSummary = useMemo(() => {

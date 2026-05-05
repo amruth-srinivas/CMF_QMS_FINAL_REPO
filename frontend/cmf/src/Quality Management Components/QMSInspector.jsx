@@ -63,15 +63,26 @@ const QMSInspector = () => {
   const projectName = searchParams.get('projectName') || '';
   const partName = searchParams.get('partName') || '';
   const operationName = searchParams.get('operationName') || '';
-  const fileIsPdf = searchParams.get('isPdf') !== 'false';
-
   const [fetchedDocumentId, setFetchedDocumentId] = useState(null);
   const [fetchedFileName, setFetchedFileName] = useState(null);
+  const [isOpDoc, setIsOpDoc] = useState(false);
 
   const documentId = documentIdParam || fetchedDocumentId;
   const fileName = fetchedFileName || fileNameParam;
 
-  const fileUrl = drawingUrl || (documentId ? `${QUALITY_API_BASE_URL}/documents/${documentId}/preview` : null);
+  const fileIsPdf = useMemo(() => {
+    const p = searchParams.get('isPdf');
+    if (p != null) return p !== 'false';
+    if (!fileName) return true;
+    return fileName.toLowerCase().endsWith('.pdf');
+  }, [searchParams, fileName]);
+
+  const fileUrl = useMemo(() => {
+    if (drawingUrl) return drawingUrl;
+    if (!documentId) return null;
+    const endpoint = isOpDoc ? 'operation-documents' : 'documents';
+    return `${QUALITY_API_BASE_URL}/${endpoint}/${documentId}/preview`;
+  }, [drawingUrl, documentId, isOpDoc]);
 
   const [quantityNo, setQuantityNo] = useState(() => {
     const q = searchParams.get('quantityNo');
@@ -168,34 +179,50 @@ const QMSInspector = () => {
   useEffect(() => {
     if (documentIdParam || drawingUrl) return;
     const pid = partId ? Number(partId) : null;
-    if (!pid) return;
+    const oid = operationId ? Number(operationId) : null;
+    if (!pid && !oid) return;
+    
     let cancelled = false;
     (async () => {
       try {
-        const res = await axios.get(`${QUALITY_API_BASE_URL}/documents/part/${pid}`);
-        const docs = Array.isArray(res.data) ? res.data : [];
-        if (!docs.length || cancelled) return;
+        // Try Part documents first
+        if (pid) {
+          const res = await axios.get(`${QUALITY_API_BASE_URL}/documents/part/${pid}`);
+          const docs = Array.isArray(res.data) ? res.data : [];
+          const best = docs.find(d => 
+            d.document_type?.toLowerCase().includes('2d') || 
+            d.document_name?.toLowerCase().includes('drawing')
+          ) || docs[0];
+          
+          if (best && !cancelled) {
+            setFetchedDocumentId(best.id);
+            setFetchedFileName(best.document_name);
+            setIsOpDoc(false);
+            return;
+          }
+        }
 
-        // Prefer drawings/2D docs
-        const best =
-          docs.find(
-            (d) =>
-              d.document_type?.toLowerCase().includes('2d') ||
-              d.document_type?.toLowerCase().includes('drawing'),
+        // Try Operation documents if no part doc found
+        if (oid) {
+          const res = await axios.get(`${QUALITY_API_BASE_URL}/operation-documents/operation/${oid}`);
+          const docs = Array.isArray(res.data) ? res.data : [];
+          const best = docs.find(d => 
+            d.document_type?.toLowerCase().includes('2d') || 
+            d.document_name?.toLowerCase().includes('drawing')
           ) || docs[0];
 
-        if (best) {
-          setFetchedDocumentId(best.id);
-          setFetchedFileName(best.document_name);
+          if (best && !cancelled) {
+            setFetchedDocumentId(best.id);
+            setFetchedFileName(best.document_name);
+            setIsOpDoc(true);
+          }
         }
       } catch (err) {
         console.warn('Auto-fetch document failed', err);
       }
     })();
-    return () => {
-      cancelled = true;
-    };
-  }, [partId, documentIdParam, drawingUrl]);
+    return () => { cancelled = true; };
+  }, [partId, operationId, documentIdParam, drawingUrl]);
 
   useEffect(() => {
     const pid = partId ? Number(partId) : null;
@@ -1115,7 +1142,14 @@ const QMSInspector = () => {
         hideTopActions={true}
         showApproveFtp={!isOperatorView && !ftpApproved && quantityNo === 1}
         onApproveFtp={handleApproveFtpDirect}
-        approveFtpDisabled={!bocTableData.length}
+        approveFtpDisabled={
+          !bocTableData.length ||
+          !bocTableData.every((r) => 
+            String(r.m1 ?? "").trim() !== "" && 
+            String(r.m2 ?? "").trim() !== "" && 
+            String(r.m3 ?? "").trim() !== ""
+          )
+        }
       />
 
       {/* Plain divs — Ant Sider's internal wrapper breaks flex height chains */}

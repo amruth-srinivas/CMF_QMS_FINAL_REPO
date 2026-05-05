@@ -270,6 +270,16 @@ const InspectionPlanNotifications = ({ dateRange, onCount }) => {
     return ftpApproveRows.every((r) => !rowHasMeasured123(r));
   }, [ftpApproveRows]);
 
+  const ftpApproveMeasurementsDone = useMemo(() => {
+    if (!ftpApproveRows?.length) return false;
+    return ftpApproveRows.every((r) => {
+      const a = parseNum(r.measured_1);
+      const b = parseNum(r.measured_2);
+      const c = parseNum(r.measured_3);
+      return a != null && b != null && c != null;
+    });
+  }, [ftpApproveRows]);
+
   const ftpApproveSummary = useMemo(() => {
     const total = ftpApproveDecoratedRows.length;
     const within = ftpApproveDecoratedRows.filter((r) => r._status === 'within').length;
@@ -615,7 +625,11 @@ const InspectionPlanNotifications = ({ dateRange, onCount }) => {
           <Space>
             <Button onClick={() => setFtpApproveModalOpen(false)}>Close</Button>
             {!ftpApproveContext?.isAck && (
-              <Button type="primary" onClick={confirmAndApproveFtp} disabled={ftpApproveLoading || ftpApproveRows.length === 0}>
+              <Button 
+                type="primary" 
+                onClick={confirmAndApproveFtp} 
+                disabled={ftpApproveLoading || !ftpApproveMeasurementsDone}
+              >
                 Approve FTP
               </Button>
             )}
