@@ -307,6 +307,7 @@ const InspectionPlanNotifications = ({ dateRange, onCount }) => {
       partNo: record.part_number,
       partId: partPk,
       orderId: record.order_id,
+      operationId: record.operation_id,
       saleOrderNumber: record.sale_order_number || String(record.order_id),
       isAck: record.is_ack
     });
@@ -395,12 +396,14 @@ const InspectionPlanNotifications = ({ dateRange, onCount }) => {
         try {
           // 1. Update FTP Status in Backend
           await axios.put(`${QUALITY_API_BASE_URL}/quality/ftp-status`, {
-            order_id: ctx.order_id,
+            order_id: ctx.orderId,
             ipid: buildFtpIpid(ctx.partNo, ctx.opNo),
             status: 'approved',
             is_completed: true,
-            approved_by_username: approvedBy,
-            approved_at: new Date().toISOString()
+            part_number: ctx.partNo,
+            op_no: ctx.opNo,
+            operation_id: ctx.operationId || 0,
+            approved_by_username: approvedBy
           });
 
           // 2. Acknowledge Notification

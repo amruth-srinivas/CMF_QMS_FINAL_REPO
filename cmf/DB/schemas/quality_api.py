@@ -25,6 +25,7 @@ class MasterBocBulkCreate(BaseModel):
 
 class MasterBocUpdate(BaseModel):
     zone: Optional[str] = None
+    measured_instrument: Optional[str] = None
 
 
 class MasterBocResponse(BaseModel):
@@ -73,6 +74,7 @@ class StageInspectionUpdate(BaseModel):
     measured_2: Optional[str] = None
     measured_3: Optional[str] = None
     measured_mean: Optional[str] = None
+    measured_instrument: Optional[str] = None
     is_done: Optional[bool] = None
 
 

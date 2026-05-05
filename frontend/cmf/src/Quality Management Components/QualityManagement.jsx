@@ -295,9 +295,11 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
 
               reportRows.push({
                 sno: sno++,
-                specified: `${rowNominal} (${fmtTol(rowUpper)}/${fmtTol(rowLower)})`,
+                qty: qtyNum,
+                specified: `${ch.dimension_type || 'Dim'}: ${rowNominal} (${fmtTol(rowUpper)}/${fmtTol(rowLower)})`,
                 zone: ch.zone || '',
                 measurements: [m?.measured_1 || '', m?.measured_2 || '', m?.measured_3 || ''],
+                instrument: m?.measured_instrument || ch.measured_instrument || 'default',
                 remarks: m?.remarks || ''
               });
             });
@@ -319,9 +321,10 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
 
             return {
               sno: idx + 1,
-              specified: `${rowNominal} (${fmtTol(rowUpper)}/${fmtTol(rowLower)})`,
+              specified: `${ch.dimension_type || 'Dim'}: ${rowNominal} (${fmtTol(rowUpper)}/${fmtTol(rowLower)})`,
               zone: ch.zone || '',
               measurements: [m?.measured_1 || '', m?.measured_2 || '', m?.measured_3 || ''],
+              instrument: m?.measured_instrument || ch.measured_instrument || 'default',
               remarks: m?.remarks || ''
             };
           });
@@ -339,7 +342,7 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
           drgNo: selectedItem.part_number,
           sheet: '1 of 1',
           projectName: projectName,
-          totalQuantity: reportQty === 'consolidated' ? 'Consolidated' : `Qty ${reportQty}`,
+          totalQuantity: reportQty === 'consolidated' ? 'Consolidated' : String(reportQty),
           assembly: assembly,
           rows: reportRows,
           approvedBy: inspectionPlanConfirmedByOp[opNo] || '—'
@@ -471,27 +474,55 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
     });
 
     // ── Rows 5-6: Table Header ─────────────────────────────────────────────────
+    const isConsolidated = reportPrintData.totalQuantity === 'Consolidated';
+
     worksheet.mergeCells('A5:A6');
     styleHeader(worksheet.getCell('A5')); worksheet.getCell('A5').value = 'Sl No';
 
     worksheet.mergeCells('B5:C6');
     styleHeader(worksheet.getCell('B5')); worksheet.getCell('B5').value = 'Specified Values';
-    applyBorder(worksheet.getCell('C5')); applyBorder(worksheet.getCell('C6'));
+    applyBorderRange(['B','C'], 5); applyBorderRange(['B','C'], 6);
 
-    worksheet.mergeCells('D5:D6');
-    styleHeader(worksheet.getCell('D5')); worksheet.getCell('D5').value = 'Zone';
+    if (isConsolidated) {
+      worksheet.mergeCells('D5:D6');
+      styleHeader(worksheet.getCell('D5')); worksheet.getCell('D5').value = 'Qty';
+      
+      worksheet.mergeCells('E5:E6');
+      styleHeader(worksheet.getCell('E5')); worksheet.getCell('E5').value = 'Zone';
 
-    worksheet.mergeCells('E5:G5');
-    styleHeader(worksheet.getCell('E5')); worksheet.getCell('E5').value = 'Measured Values';
-    applyBorder(worksheet.getCell('F5')); applyBorder(worksheet.getCell('G5'));
+      worksheet.mergeCells('F5:H5');
+      styleHeader(worksheet.getCell('F5')); worksheet.getCell('F5').value = 'Measured Values';
+      applyBorderRange(['F','G','H'], 5);
+      worksheet.getCell('F6').value = '1'; styleHeader(worksheet.getCell('F6'));
+      worksheet.getCell('G6').value = '2'; styleHeader(worksheet.getCell('G6'));
+      worksheet.getCell('H6').value = '3'; styleHeader(worksheet.getCell('H6'));
 
-    worksheet.getCell('E6').value = '1'; styleHeader(worksheet.getCell('E6'));
-    worksheet.getCell('F6').value = '2'; styleHeader(worksheet.getCell('F6'));
-    worksheet.getCell('G6').value = '3'; styleHeader(worksheet.getCell('G6'));
+      worksheet.mergeCells('I5:J6');
+      styleHeader(worksheet.getCell('I5')); worksheet.getCell('I5').value = 'Instrument';
+      applyBorderRange(['I','J'], 5); applyBorderRange(['I','J'], 6);
 
-    worksheet.mergeCells('H5:M6');
-    styleHeader(worksheet.getCell('H5')); worksheet.getCell('H5').value = 'Remarks';
-    ['I','J','K','L','M'].forEach(c => { applyBorder(worksheet.getCell(`${c}5`)); applyBorder(worksheet.getCell(`${c}6`)); });
+      worksheet.mergeCells('K5:M6');
+      styleHeader(worksheet.getCell('K5')); worksheet.getCell('K5').value = 'Remarks';
+      applyBorderRange(['K','L','M'], 5); applyBorderRange(['K','L','M'], 6);
+    } else {
+      worksheet.mergeCells('D5:D6');
+      styleHeader(worksheet.getCell('D5')); worksheet.getCell('D5').value = 'Zone';
+
+      worksheet.mergeCells('E5:G5');
+      styleHeader(worksheet.getCell('E5')); worksheet.getCell('E5').value = 'Measured Values';
+      applyBorderRange(['E','F','G'], 5);
+      worksheet.getCell('E6').value = '1'; styleHeader(worksheet.getCell('E6'));
+      worksheet.getCell('F6').value = '2'; styleHeader(worksheet.getCell('F6'));
+      worksheet.getCell('G6').value = '3'; styleHeader(worksheet.getCell('G6'));
+
+      worksheet.mergeCells('H5:I6');
+      styleHeader(worksheet.getCell('H5')); worksheet.getCell('H5').value = 'Instrument';
+      applyBorderRange(['H','I'], 5); applyBorderRange(['H','I'], 6);
+
+      worksheet.mergeCells('J5:M6');
+      styleHeader(worksheet.getCell('J5')); worksheet.getCell('J5').value = 'Remarks';
+      applyBorderRange(['J','K','L','M'], 5); applyBorderRange(['J','K','L','M'], 6);
+    }
 
     worksheet.getRow(5).height = 16;
     worksheet.getRow(6).height = 16;
@@ -503,19 +534,33 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
       worksheet.getCell(`B${cur}`).value = r.specified;
       worksheet.getCell(`B${cur}`).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
       
-      worksheet.getCell(`D${cur}`).value = r.zone;
-      worksheet.getCell(`E${cur}`).value = r.measurements[0] !== '' ? r.measurements[0] : '';
-      worksheet.getCell(`F${cur}`).value = r.measurements[1] !== '' ? r.measurements[1] : '';
-      worksheet.getCell(`G${cur}`).value = r.measurements[2] !== '' ? r.measurements[2] : '';
-      
-      worksheet.mergeCells(`H${cur}:M${cur}`);
-      worksheet.getCell(`H${cur}`).value = r.remarks || '';
-      worksheet.getCell(`H${cur}`).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
+      if (isConsolidated) {
+        worksheet.getCell(`D${cur}`).value = r.qty;
+        worksheet.getCell(`E${cur}`).value = r.zone;
+        worksheet.getCell(`F${cur}`).value = r.measurements[0];
+        worksheet.getCell(`G${cur}`).value = r.measurements[1];
+        worksheet.getCell(`H${cur}`).value = r.measurements[2];
+        worksheet.mergeCells(`I${cur}:J${cur}`);
+        worksheet.getCell(`I${cur}`).value = r.instrument || 'default';
+        worksheet.mergeCells(`K${cur}:M${cur}`);
+        worksheet.getCell(`K${cur}`).value = r.remarks || '';
+        worksheet.getCell(`K${cur}`).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
+      } else {
+        worksheet.getCell(`D${cur}`).value = r.zone;
+        worksheet.getCell(`E${cur}`).value = r.measurements[0];
+        worksheet.getCell(`F${cur}`).value = r.measurements[1];
+        worksheet.getCell(`G${cur}`).value = r.measurements[2];
+        worksheet.mergeCells(`H${cur}:I${cur}`);
+        worksheet.getCell(`H${cur}`).value = r.instrument || 'default';
+        worksheet.mergeCells(`J${cur}:M${cur}`);
+        worksheet.getCell(`J${cur}`).value = r.remarks || '';
+        worksheet.getCell(`J${cur}`).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
+      }
 
       ['A','B','C','D','E','F','G','H','I','J','K','L','M'].forEach(col => {
         const c = worksheet.getCell(`${col}${cur}`);
         c.border = bs;
-        if (col !== 'B' && col !== 'H') {
+        if (col !== 'B' && col !== 'H' && col !== 'K' && col !== 'J') {
            c.alignment = { horizontal: 'center', vertical: 'middle' };
         }
       });
@@ -1043,13 +1088,8 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
   }, [ftpApproveRows]);
 
   const ftpApproveMeasurementsDone = useMemo(() => {
-    if (!ftpApproveRows?.length) return false;
-    return ftpApproveRows.every((r) => {
-      const a = parseNum(r.measured_1);
-      const b = parseNum(r.measured_2);
-      const c = parseNum(r.measured_3);
-      return a != null && b != null && c != null;
-    });
+    // Relaxed: Allow supervisor to approve even if some measurements are missing or "wrong"
+    return ftpApproveRows?.length > 0;
   }, [ftpApproveRows]);
 
   const ftpApproveSummary = useMemo(() => {
@@ -1070,6 +1110,7 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
     const opNo = parseOpNo(record);
     setFtpApproveContext({
       opNo,
+      opId: record.id,
       opName: record?.operation_name || '',
       partNo: selectedItem.part_number,
       partId: selectedItem.id,
@@ -1140,18 +1181,31 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
     }
   };
 
-  const runFtpApprovalApi = async (opNo) => {
+  const runFtpApprovalApi = async (opNo, opId) => {
     const oid = effectiveOrderId && String(effectiveOrderId) !== 'null' ? Number(effectiveOrderId) : null;
     const partNo = selectedItem?.part_number;
     if (!oid || !partNo) {
       message.error('Missing order/part for FTP approval.');
       return;
     }
+
+    let reqUsername = '';
+    try {
+      const u = JSON.parse(localStorage.getItem('user') || '{}');
+      reqUsername = (u.user_name || u.username || '').trim();
+    } catch {
+      reqUsername = 'supervisor';
+    }
+
     await axios.put(`${QUALITY_API_BASE_URL}/quality/ftp-status`, {
       order_id: oid,
       ipid: buildFtpIpid(partNo, opNo),
       status: 'approved',
       is_completed: true,
+      part_number: partNo,
+      op_no: opNo,
+      operation_id: opId,
+      approved_by_username: reqUsername || undefined,
     });
     setFtpStatusByOp((prev) => ({ ...prev, [opNo]: 'approved' }));
     message.success(`FTP approved for operation ${opNo}.`);
@@ -1173,7 +1227,7 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
       okButtonProps: { type: 'primary' },
       onOk: async () => {
         try {
-          await runFtpApprovalApi(opNo);
+          await runFtpApprovalApi(opNo, ftpApproveContext?.opId);
           setFtpApproveModalOpen(false);
           setFtpApproveContext(null);
           setFtpApproveRows([]);
@@ -2621,9 +2675,11 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                       <tr className="report-boc-head">
                         <td rowSpan={2}>Sl No</td>
                         <td rowSpan={2} colSpan={2}>Specified Values</td>
+                        {reportPrintData?.totalQuantity === 'Consolidated' && <td rowSpan={2}>Quantity</td>}
                         <td rowSpan={2}>Zone</td>
                         <td colSpan={3}>Measured Values</td>
-                        <td rowSpan={2} colSpan={6}>Remarks</td>
+                        <td rowSpan={2} colSpan={2}>Instrument</td>
+                        <td rowSpan={2} colSpan={reportPrintData?.totalQuantity === 'Consolidated' ? 3 : 4}>Remarks</td>
                       </tr>
                       <tr className="report-boc-head">
                         <td>1</td>
@@ -2635,11 +2691,13 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                         <tr key={i}>
                           <td>{row.sno}</td>
                           <td colSpan={2} className="report-tl">{row.specified}</td>
+                          {reportPrintData?.totalQuantity === 'Consolidated' && <td>{row.qty}</td>}
                           <td>{row.zone}</td>
                           {(row.measurements || []).slice(0, 3).map((m, mi) => (
                             <td key={mi}>{m !== '' && m != null ? m : ''}</td>
                           ))}
-                          <td colSpan={6} className="report-tl">{row.remarks || ''}</td>
+                          <td colSpan={2}>{row.instrument || 'default'}</td>
+                          <td colSpan={reportPrintData?.totalQuantity === 'Consolidated' ? 3 : 4} className="report-tl">{row.remarks || ''}</td>
                         </tr>
                       ))}
 

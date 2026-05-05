@@ -53,17 +53,23 @@ const QMSInspector = () => {
   const isOperatorView = location.pathname.startsWith('/operator/');
 
   const drawingUrl = searchParams.get('drawingUrl');
-  const documentId = searchParams.get('documentId');
+  const documentIdParam = searchParams.get('documentId');
   const partId = searchParams.get('partId');
   const partNumber = searchParams.get('partNumber');
   const orderId = searchParams.get('orderId');
   const opNumber = searchParams.get('operationNumber');
   const operationId = searchParams.get('operationId');
-  const fileName = searchParams.get('fileName') || 'Drawing.pdf';
+  const fileNameParam = searchParams.get('fileName') || 'Drawing.pdf';
   const projectName = searchParams.get('projectName') || '';
   const partName = searchParams.get('partName') || '';
   const operationName = searchParams.get('operationName') || '';
   const fileIsPdf = searchParams.get('isPdf') !== 'false';
+
+  const [fetchedDocumentId, setFetchedDocumentId] = useState(null);
+  const [fetchedFileName, setFetchedFileName] = useState(null);
+
+  const documentId = documentIdParam || fetchedDocumentId;
+  const fileName = fetchedFileName || fileNameParam;
 
   const fileUrl = drawingUrl || (documentId ? `${QUALITY_API_BASE_URL}/documents/${documentId}/preview` : null);
 
@@ -158,6 +164,38 @@ const QMSInspector = () => {
   useEffect(() => {
     if (orderId && !Number.isNaN(Number(orderId))) setSalesOrderId(Number(orderId));
   }, [orderId]);
+
+  useEffect(() => {
+    if (documentIdParam || drawingUrl) return;
+    const pid = partId ? Number(partId) : null;
+    if (!pid) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await axios.get(`${QUALITY_API_BASE_URL}/documents/part/${pid}`);
+        const docs = Array.isArray(res.data) ? res.data : [];
+        if (!docs.length || cancelled) return;
+
+        // Prefer drawings/2D docs
+        const best =
+          docs.find(
+            (d) =>
+              d.document_type?.toLowerCase().includes('2d') ||
+              d.document_type?.toLowerCase().includes('drawing'),
+          ) || docs[0];
+
+        if (best) {
+          setFetchedDocumentId(best.id);
+          setFetchedFileName(best.document_name);
+        }
+      } catch (err) {
+        console.warn('Auto-fetch document failed', err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [partId, documentIdParam, drawingUrl]);
 
   useEffect(() => {
     const pid = partId ? Number(partId) : null;
@@ -420,11 +458,12 @@ const QMSInspector = () => {
         m2: st?.measured_2 ?? '',
         m3: st?.measured_3 ?? '',
         actualValue: st?.measured_mean ?? '',
+        instrument: st?.measured_instrument || r.instrument,
         stageInspectionId: st?.id ?? null,
-        measureLocked: Boolean(st?.is_done),
+        measureLocked: Boolean(st?.is_done) || (quantityNo === 1 && ftpApproved),
       };
     });
-  }, [bocDisplay, stageByMasterId]);
+  }, [bocDisplay, stageByMasterId, quantityNo, ftpApproved]);
 
   const firstQtyAllDone = useMemo(() => {
     if (quantityNo !== 1 || !bocTableData.length) return false;
@@ -769,17 +808,16 @@ const QMSInspector = () => {
       okText: 'Confirm',
       onOk: async () => {
         try {
-          const exporter = exportBalloonedRef.current;
-          if (typeof exporter !== 'function') {
-            throw new Error('Drawing is still rendering. Please wait a moment and try again.');
-          }
-          const blob = await exporter();
-          if (!blob) {
-            throw new Error('Failed to build balloon PDF.');
-          }
-
-          // Only upload if it's a REAL operation (not op 0) and has a valid ID
+          // Only attempt PDF export and upload for real operations (not op 0 / Final Part)
           if (!isFinalPart && opIdInt > 0) {
+            const exporter = exportBalloonedRef.current;
+            if (typeof exporter !== 'function') {
+              throw new Error('Drawing is still rendering. Please wait a moment and try again.');
+            }
+            const blob = await exporter();
+            if (!blob) {
+              throw new Error('Failed to build balloon PDF.');
+            }
             const fd = new FormData();
             const safePart = (partNumber || 'part').replace(/[^a-zA-Z0-9_-]+/g, '_');
             const fileName = `${safePart}_op${opNoInt}_balloon.pdf`;
@@ -1074,10 +1112,10 @@ const QMSInspector = () => {
         onConfirmPlan={isOperatorView ? undefined : handleConfirmPlan}
         confirmPlanDisabled={!bocRowsRaw.length || !salesOrderId || !partNumber}
         measureOnly={isOperatorView}
-        hideTopActions={isOperatorView || opNo === 0}
-        showApproveFtp={!isOperatorView && opNo === 0 && !ftpApproved}
+        hideTopActions={true}
+        showApproveFtp={!isOperatorView && !ftpApproved && quantityNo === 1}
         onApproveFtp={handleApproveFtpDirect}
-        approveFtpDisabled={planStatus !== 'confirmed' || !bocTableData.every(r => Boolean(r.m1) || Boolean(r.m2) || Boolean(r.m3))}
+        approveFtpDisabled={!bocTableData.length}
       />
 
       {/* Plain divs — Ant Sider's internal wrapper breaks flex height chains */}

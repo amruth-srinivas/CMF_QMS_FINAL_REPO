@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import { Table, Tag, Typography, Space, Button, Empty, Popover, Select, Divider, Input } from 'antd';
-import { FilterOutlined, UnorderedListOutlined } from '@ant-design/icons';
+import { FilterOutlined, UnorderedListOutlined, EditOutlined } from '@ant-design/icons';
 
 const { Text } = Typography;
 
@@ -100,6 +100,7 @@ const InspectorBOCTable = ({
   onFilterZonesChange,
   measureMode = false,
   onMeasurePatch,
+  onPlanPatch,
   quantityOptions = [{ value: 1, label: 'Quantity 1' }],
   quantityNo = 1,
   onQuantityChange,
@@ -111,6 +112,7 @@ const InspectorBOCTable = ({
   const tableScrollRef = useRef(null);
   const suppressRowClickRef = useRef(false);
   const dragStateRef = useRef({ down: false, moved: false, startX: 0, startY: 0, scrollL: 0, scrollT: 0 });
+  const [editingInstrumentRowId, setEditingInstrumentRowId] = React.useState(null);
 
   useEffect(() => {
     rangeAnchorIndexRef.current = null;
@@ -443,14 +445,6 @@ const InspectorBOCTable = ({
           </Text>
         ),
       },
-      {
-        title: 'INSTRUMENT',
-        dataIndex: 'instrument',
-        key: 'instrument',
-        width: 84,
-        align: 'center',
-        render: (instr) => <Text style={{ fontSize: '11px' }}>{instr}</Text>,
-      },
     ];
 
     const actualCol = {
@@ -486,6 +480,67 @@ const InspectorBOCTable = ({
       render: (v, record, i) => renderMInput('m3', 52)(v, record, i),
     };
 
+    const instrumentCol = {
+      title: 'INSTRUMENT',
+      dataIndex: 'instrument',
+      key: 'instrument',
+      width: 120,
+      align: 'center',
+      render: (instr, record) => {
+        const isEditing = measureMode && editingInstrumentRowId === record.id;
+        const displayVal = instr && instr !== 'default' ? instr : '';
+        const placeholder = 'default';
+
+        if (isEditing) {
+          return (
+            <Input
+              size="small"
+              autoFocus
+              defaultValue={displayVal}
+              placeholder={placeholder}
+              style={{ fontSize: 11, width: '100%' }}
+              onBlur={(e) => {
+                const val = e.target.value.trim() || 'default';
+                if (record.stageInspectionId) {
+                  onMeasurePatch?.(record.stageInspectionId, { measured_instrument: val });
+                }
+                setEditingInstrumentRowId(null);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') e.target.blur();
+                if (e.key === 'Escape') setEditingInstrumentRowId(null);
+              }}
+            />
+          );
+        }
+
+        if (measureMode) {
+          return (
+            <div
+              title="Click to set instrument name"
+              style={{ cursor: 'pointer', width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, minHeight: 22 }}
+              onClick={(e) => {
+                e.stopPropagation();
+                setEditingInstrumentRowId(record.id);
+              }}
+            >
+              <Text style={{ fontSize: '11px', color: displayVal ? '#262626' : '#bfbfbf' }}>
+                {displayVal || placeholder}
+              </Text>
+              <EditOutlined style={{ fontSize: 10, color: '#1890ff', flexShrink: 0 }} />
+            </div>
+          );
+        }
+
+        // Plan mode: read-only
+        return (
+          <Text style={{ fontSize: '11px', color: displayVal ? '#262626' : '#bfbfbf' }}>
+            {displayVal || placeholder}
+          </Text>
+        );
+      },
+    };
+
     if (measureMode) {
       return [
         baseCols[0],
@@ -498,11 +553,11 @@ const InspectorBOCTable = ({
         m1Col,
         m2Col,
         m3Col,
-        baseCols[6],
+        instrumentCol,
       ];
     }
-    return baseCols;
-  }, [measureMode, renderMInput, renderActualDisplay]);
+    return [...baseCols, instrumentCol];
+  }, [measureMode, renderMInput, renderActualDisplay, editingInstrumentRowId, setEditingInstrumentRowId, onMeasurePatch]);
 
   const countTotal = totalCount ?? dataSource.length;
   const badge = filterActive ? `${dataSource.length} / ${countTotal}` : String(dataSource.length);
@@ -512,7 +567,7 @@ const InspectorBOCTable = ({
   const handleRowClick = useCallback(
     (record, index, e) => {
       if (suppressRowClickRef.current) return;
-      if (e.target?.closest?.('input, textarea, button, .ant-select, .ant-input')) {
+      if (e.target?.closest?.('input, textarea, button, .ant-select, .ant-input, .anticon')) {
         return;
       }
       if (e.shiftKey && rangeAnchorIndexRef.current != null) {
