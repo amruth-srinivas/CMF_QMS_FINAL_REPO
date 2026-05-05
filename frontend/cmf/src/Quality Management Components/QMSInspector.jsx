@@ -1074,10 +1074,10 @@ const QMSInspector = () => {
         onConfirmPlan={isOperatorView ? undefined : handleConfirmPlan}
         confirmPlanDisabled={!bocRowsRaw.length || !salesOrderId || !partNumber}
         measureOnly={isOperatorView}
-        hideTopActions={isOperatorView}
+        hideTopActions={isOperatorView || opNo === 0}
         showApproveFtp={!isOperatorView && opNo === 0 && !ftpApproved}
         onApproveFtp={handleApproveFtpDirect}
-        approveFtpDisabled={quantityNo !== 1 || planStatus !== 'confirmed' || !firstQtyAllDone}
+        approveFtpDisabled={planStatus !== 'confirmed' || !bocTableData.every(r => Boolean(r.m1) || Boolean(r.m2) || Boolean(r.m3))}
       />
 
       {/* Plain divs — Ant Sider's internal wrapper breaks flex height chains */}

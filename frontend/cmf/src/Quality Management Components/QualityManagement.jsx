@@ -101,6 +101,10 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
 
   const [reportPrintData, setReportPrintData] = useState(null);
   const [reportModalOpen, setReportModalOpen] = useState(false);
+  const [reportQty, setReportQty] = useState('consolidated');
+  const [reportQtyOptions, setReportQtyOptions] = useState([]);
+  const [reportContext, setReportContext] = useState(null);
+  const [reportLoading, setReportLoading] = useState(false);
   const [measurePartMode, setMeasurePartMode] = useState(false);
   const [measurePartOps, setMeasurePartOps] = useState([]);
 
@@ -151,7 +155,17 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
   };
 
   const handleOpenPartReport = () => {
-    message.info('Part Quality Report is being generated as a consolidated PDF summary.');
+    const oid = effectiveOrderId && String(effectiveOrderId) !== 'null' ? Number(effectiveOrderId) : null;
+    if (!oid || !selectedItem) {
+      message.warning('Please select a part and ensure an order is active.');
+      return;
+    }
+    const op0 = (operations || []).find(o => {
+      const n = parseOpNo(o);
+      return n === 0 || (typeof o.operation_name === 'string' && o.operation_name.toLowerCase().includes('final part'));
+    }) || { id: 0, operation_number: '0', operation_name: 'Final Part Overview' };
+
+    handleGenerateReport(op0, true);
   };
 
   const handleOpenPartMeasurement = async () => {
@@ -161,15 +175,11 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
       return;
     }
     // Search for Final Part Overview (usually op_no 0)
+    // Search for Final Part Overview (usually op_no 0) or fallback to mock
     const op0 = (operations || []).find(o => {
       const n = parseOpNo(o);
       return n === 0 || (typeof o.operation_name === 'string' && o.operation_name.toLowerCase().includes('final part'));
-    });
-
-    if (!op0) {
-      message.warning('No "Final Part Overview" operation found to display part measurements.');
-      return;
-    }
+    }) || { id: 0, operation_number: '0', operation_name: 'Final Part Overview' };
 
     setMeasurePartMode(false); // Show as a single operation view, not consolidated
     setMeasureContext({
@@ -186,72 +196,166 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
     setMeasureModalLoading(true);
   };
 
-  const handleGenerateReport = async (record) => {
+  const handleGenerateReport = async (record, isPartReport = false) => {
     const opNo = parseOpNo(record);
     const partPk = selectedItem.id;
     const oid = Number(effectiveOrderId);
     
-    const hideLoading = message.loading(`Preparing inspection report for Operation ${opNo}...`, 0);
+    setReportModalOpen(true);
+    setReportLoading(true);
     
     try {
-        // Fetch Master BOC first to get characteristics
+        let qtyMax = 1;
+        try {
+            const p = await axios.get(`${QUALITY_API_BASE_URL}/parts/${partPk}`);
+            const q = Number(p.data?.qty);
+            if (Number.isFinite(q) && q >= 1) qtyMax = Math.min(999, Math.floor(q));
+        } catch {
+            qtyMax = 1;
+        }
+
+        const qOpts = Array.from({ length: qtyMax }, (_, i) => ({ value: i + 1, label: `Qty ${i + 1}` }));
+        qOpts.unshift({ value: 'consolidated', label: 'Consolidated' });
+        setReportQtyOptions(qOpts);
+        setReportQty(1);
+
+        setReportContext({
+            opNo,
+            partPk,
+            oid,
+            record,
+            qtyMax,
+            isPartReport,
+            partNumber: selectedItem.part_number
+        });
+    } catch (error) {
+        console.error(error);
+        message.error("Failed to initialize report.");
+        setReportModalOpen(false);
+    }
+  };
+  useEffect(() => {
+    if (!reportModalOpen || !reportContext) return;
+    let cancelled = false;
+
+    const fetchReportData = async () => {
+      setReportLoading(true);
+      try {
+        const { opNo, partPk, oid, record, partNumber, qtyMax } = reportContext;
+
         const masterRes = await axios.get(`${QUALITY_API_BASE_URL}/quality/master-boc`, {
-            params: { part_id: selectedItem.part_number, sales_order_id: oid, op_no: opNo }
+          params: { part_id: partNumber, sales_order_id: oid, op_no: opNo }
         });
         const chars = masterRes.data || [];
-        
-        // Fetch outcomes for Qty 1..3
-        const outcomes = await Promise.all([1,2,3].map(async (q) => {
-            try {
-                const res = await axios.get(`${QUALITY_API_BASE_URL}/quality/stage-inspection`, {
-                    params: { part_id: partPk, sale_order_id: oid, op_no: opNo, quantity_no: q }
-                });
-                return res.data || [];
-            } catch {
-                return [];
-            }
-        }));
 
-        // Build report rows
-        const reportRows = chars.map((ch, idx) => {
-            const mValues = outcomes.map(qtyList => {
-                const m = qtyList.find(row => row.master_boc_id === ch.id);
-                return m ? m.mean : '';
+        let outcomes = [];
+
+        if (reportQty === 'consolidated') {
+          const allQtys = Array.from({ length: qtyMax }, (_, i) => i + 1);
+          outcomes = await Promise.all(allQtys.map(async (q) => {
+            try {
+              const res = await axios.get(`${QUALITY_API_BASE_URL}/quality/stage-inspection`, {
+                params: { part_id: partPk, sale_order_id: oid, op_no: opNo, quantity_no: q }
+              });
+              return { qty: q, data: res.data || [] };
+            } catch {
+              return { qty: q, data: [] };
+            }
+          }));
+        } else {
+          try {
+            const res = await axios.get(`${QUALITY_API_BASE_URL}/quality/stage-inspection`, {
+              params: { part_id: partPk, sale_order_id: oid, op_no: opNo, quantity_no: reportQty }
             });
-            return {
-                sno: idx + 1,
-                specified: `${ch.nominal} (${fmtTol(ch.uppertol)}/${fmtTol(ch.lowertol)})`,
+            outcomes = [{ qty: reportQty, data: res.data || [] }];
+          } catch {
+            outcomes = [{ qty: reportQty, data: [] }];
+          }
+        }
+
+        if (cancelled) return;
+
+        let reportRows = [];
+        if (reportQty === 'consolidated') {
+          let sno = 1;
+          outcomes.forEach(o => {
+            const qtyNum = o.qty;
+            const qtyList = o.data;
+            chars.forEach(ch => {
+              const m = qtyList.find(row => {
+                try {
+                  const bboxObj = JSON.parse(row.bbox || '{}');
+                  return bboxObj.master_boc_id === ch.id;
+                } catch(e) { return false; }
+              });
+              
+              const rowNominal = m ? (m.nominal_value ?? ch.nominal) : ch.nominal;
+              const rowUpper = m ? (m.uppertol ?? ch.uppertol) : ch.uppertol;
+              const rowLower = m ? (m.lowertol ?? ch.lowertol) : ch.lowertol;
+
+              reportRows.push({
+                sno: sno++,
+                specified: `${rowNominal} (${fmtTol(rowUpper)}/${fmtTol(rowLower)})`,
                 zone: ch.zone || '',
-                measurements: mValues,
-                remarks: ''
+                measurements: [m?.measured_1 || '', m?.measured_2 || '', m?.measured_3 || ''],
+                remarks: m?.remarks || ''
+              });
+            });
+          });
+        } else {
+          const qtyData = outcomes[0];
+          const qtyList = qtyData?.data || [];
+          reportRows = chars.map((ch, idx) => {
+            const m = qtyList.find(row => {
+              try {
+                const bboxObj = JSON.parse(row.bbox || '{}');
+                return bboxObj.master_boc_id === ch.id;
+              } catch(e) { return false; }
+            });
+            
+            const rowNominal = m ? (m.nominal_value ?? ch.nominal) : ch.nominal;
+            const rowUpper = m ? (m.uppertol ?? ch.uppertol) : ch.uppertol;
+            const rowLower = m ? (m.lowertol ?? ch.lowertol) : ch.lowertol;
+
+            return {
+              sno: idx + 1,
+              specified: `${rowNominal} (${fmtTol(rowUpper)}/${fmtTol(rowLower)})`,
+              zone: ch.zone || '',
+              measurements: [m?.measured_1 || '', m?.measured_2 || '', m?.measured_3 || ''],
+              remarks: m?.remarks || ''
             };
-        });
+          });
+        }
 
         const hierarchy = productHierarchies[selectedItem.productId];
         const projectName = hierarchy?.product?.product_name || '';
         const assembly = selectedItem.assembly_name || 'Main';
 
         setReportPrintData({
-            reportNo: `RPT-${oid}-${opNo}`,
-            componentTitle: selectedItem.part_name,
-            date: new Date().toLocaleDateString(),
-            projectNo: oid,
-            drgNo: selectedItem.part_number,
-            sheet: '1 of 1',
-            projectName: projectName,
-            totalQuantity: record.completed_quantity || 0,
-            assembly: assembly,
-            rows: reportRows,
-            approvedBy: inspectionPlanConfirmedByOp[opNo] || '—'
+          reportNo: `RPT-${oid}-${opNo}`,
+          componentTitle: selectedItem.part_name,
+          date: new Date().toLocaleDateString(),
+          projectNo: oid,
+          drgNo: selectedItem.part_number,
+          sheet: '1 of 1',
+          projectName: projectName,
+          totalQuantity: reportQty === 'consolidated' ? 'Consolidated' : `Qty ${reportQty}`,
+          assembly: assembly,
+          rows: reportRows,
+          approvedBy: inspectionPlanConfirmedByOp[opNo] || '—'
         });
-        setReportModalOpen(true);
-    } catch (error) {
+
+      } catch (error) {
         console.error(error);
-        message.error("Failed to generate report data.");
-    } finally {
-        hideLoading();
-    }
-  };
+        if (!cancelled) message.error("Failed to generate report data.");
+      } finally {
+        if (!cancelled) setReportLoading(false);
+      }
+    };
+
+    fetchReportData();
+    return () => { cancelled = true; };
+  }, [reportModalOpen, reportContext, reportQty, selectedItem, inspectionPlanConfirmedByOp, productHierarchies]);
 
   const handleExportExcel = async () => {
     if (!reportPrintData) return;
@@ -263,19 +367,19 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
     // A=SlNo, B-C=Specified Values, D=Zone, E=Sample1, F=Sample2, G=Sample3, H=Remarks
     // I-L used for Hardness test block (4 cols), M=trailing blank col
     worksheet.columns = [
-      { width: 6.5  }, // A  – logo / Sl No
-      { width: 22 }, // B  – Specified Values (part 1)
-      { width: 10 }, // C  – Specified Values (part 2) / Zone overflow
+      { width: 20 }, // A  – logo / Sl No / Labels
+      { width: 14 }, // B  – Specified Values (part 1)
+      { width: 14 }, // C  – Specified Values (part 2)
       { width: 10 }, // D  – Zone
-      { width: 12 }, // E  – Sample 1
-      { width: 12 }, // F  – Sample 2
-      { width: 12 }, // G  – Sample 3
-      { width: 18 }, // H  – Remarks
-      { width: 12 }, // I  – (Hardness col 1)
-      { width: 12 }, // J  – (Hardness col 2)
-      { width: 12 }, // K  – (Hardness col 3)
-      { width: 12 }, // L  – (Hardness col 4)
-      { width: 8  }, // M  – trailing blank
+      { width: 14 }, // E  – Sample 1 / Labels
+      { width: 14 }, // F  – Sample 2
+      { width: 14 }, // G  – Sample 3
+      { width: 18 }, // H  – Remarks Label / Test Labels
+      { width: 14 }, // I  – (Hardness Labels)
+      { width: 14 }, // J  – (Hardness col 2)
+      { width: 14 }, // K  – (Hardness col 3)
+      { width: 14 }, // L  – (Hardness col 4)
+      { width: 5  }, // M  – trailing blank
     ];
 
     const thin = { style: 'thin' };
@@ -291,10 +395,9 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
       applyBorder(cell);
     };
 
-    // ── Row 1: compact CMTI logo | INSPECTION REPORT (matches template density) ─
+    // ── Row 1: Logo and Title ──
     const cmtiCell = worksheet.getCell('A1');
     cmtiCell.value = '';
-    cmtiCell.alignment = { horizontal: 'center', vertical: 'middle' };
     applyBorder(cmtiCell);
     try {
       const logoRes = await fetch(cmtiLogo);
@@ -323,9 +426,7 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
     ['C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M'].forEach((c) => applyBorder(worksheet.getCell(`${c}1`)));
     worksheet.getRow(1).height = 30;
 
-    // ── Rows 3-5: Meta fields ───────────────────────────────────────────────────
-    // Preview layout (11 cols mapped to 13):
-    //  [Report No :] [     reportNo (cols B-D)    ] [Component Title:] [componentTitle(E-I)] [Date:] [date(J-M)]
+    // ── Rows 2-4: Meta fields (Aligned with Table Sections) ──
     const metaRows = [
       { row: 2, l1: 'Report No :',   v1: reportPrintData.reportNo,       l2: 'Component Title:', v2: reportPrintData.componentTitle, l3: 'Date:',     v3: reportPrintData.date               },
       { row: 3, l1: 'Project No.:', v1: reportPrintData.projectNo,       l2: 'Drg No:',          v2: reportPrintData.drgNo,          l3: 'Sheet',      v3: reportPrintData.sheet || '1 of 1' },
@@ -333,31 +434,40 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
     ];
 
     metaRows.forEach(({ row, l1, v1, l2, v2, l3, v3 }) => {
+      // Section 1: Label A, Value B-D
       const label1 = worksheet.getCell(`A${row}`);
-      label1.value = l1; label1.font = { bold: true }; label1.alignment = { horizontal: 'right', vertical: 'middle', indent: 1 }; applyBorder(label1);
+      label1.value = l1; label1.font = { bold: true, size: 10 }; 
+      label1.alignment = { horizontal: 'right', vertical: 'middle', indent: 1 }; 
+      applyBorder(label1);
 
       worksheet.mergeCells(`B${row}:D${row}`);
       const val1 = worksheet.getCell(`B${row}`);
-      val1.value = v1; val1.alignment = { horizontal: 'center', vertical: 'middle' }; applyBorder(val1);
-      ['C','D'].forEach(c => applyBorder(worksheet.getCell(`${c}${row}`)));
+      val1.value = v1; val1.alignment = { horizontal: 'center', vertical: 'middle' }; 
+      applyBorderRange(['B','C','D'], row);
 
+      // Section 2: Label E, Value F-G
       const label2 = worksheet.getCell(`E${row}`);
-      label2.value = l2; label2.font = { bold: true }; label2.alignment = { horizontal: 'right', vertical: 'middle', indent: 1 }; applyBorder(label2);
+      label2.value = l2; label2.font = { bold: true, size: 10 }; 
+      label2.alignment = { horizontal: 'right', vertical: 'middle' }; 
+      applyBorder(label2);
 
-      worksheet.mergeCells(`F${row}:I${row}`);
+      worksheet.mergeCells(`F${row}:G${row}`);
       const val2 = worksheet.getCell(`F${row}`);
-      val2.value = v2; val2.alignment = { horizontal: 'center', vertical: 'middle' }; applyBorder(val2);
-      ['G','H','I'].forEach(c => applyBorder(worksheet.getCell(`${c}${row}`)));
+      val2.value = v2; val2.alignment = { horizontal: 'center', vertical: 'middle' }; 
+      applyBorderRange(['F','G'], row);
 
-      const label3 = worksheet.getCell(`J${row}`);
-      label3.value = l3; label3.font = { bold: true }; label3.alignment = { horizontal: 'right', vertical: 'middle', indent: 1 }; applyBorder(label3);
+      // Section 3: Label H, Value I-M
+      const label3 = worksheet.getCell(`H${row}`);
+      label3.value = l3; label3.font = { bold: true, size: 10 }; 
+      label3.alignment = { horizontal: 'right', vertical: 'middle', indent: 1 }; 
+      applyBorder(label3);
 
-      worksheet.mergeCells(`K${row}:M${row}`);
-      const val3 = worksheet.getCell(`K${row}`);
-      val3.value = v3; val3.alignment = { horizontal: 'center', vertical: 'middle' }; applyBorder(val3);
-      ['L','M'].forEach(c => applyBorder(worksheet.getCell(`${c}${row}`)));
+      worksheet.mergeCells(`I${row}:M${row}`);
+      const val3 = worksheet.getCell(`I${row}`);
+      val3.value = v3; val3.alignment = { horizontal: 'center', vertical: 'middle' }; 
+      applyBorderRange(['I','J','K','L','M'], row);
 
-      worksheet.getRow(row).height = 16;
+      worksheet.getRow(row).height = 22;
     });
 
     // ── Rows 5-6: Table Header ─────────────────────────────────────────────────
@@ -385,130 +495,137 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
 
     worksheet.getRow(5).height = 16;
     worksheet.getRow(6).height = 16;
-
-    // ── Rows 7+: Data rows ─────────────────────────────────────────────────────
+    
     let cur = 7;
     reportPrintData.rows.forEach(r => {
       worksheet.getCell(`A${cur}`).value = r.sno;
       worksheet.mergeCells(`B${cur}:C${cur}`);
       worksheet.getCell(`B${cur}`).value = r.specified;
+      worksheet.getCell(`B${cur}`).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
+      
       worksheet.getCell(`D${cur}`).value = r.zone;
       worksheet.getCell(`E${cur}`).value = r.measurements[0] !== '' ? r.measurements[0] : '';
       worksheet.getCell(`F${cur}`).value = r.measurements[1] !== '' ? r.measurements[1] : '';
       worksheet.getCell(`G${cur}`).value = r.measurements[2] !== '' ? r.measurements[2] : '';
+      
       worksheet.mergeCells(`H${cur}:M${cur}`);
       worksheet.getCell(`H${cur}`).value = r.remarks || '';
+      worksheet.getCell(`H${cur}`).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
 
       ['A','B','C','D','E','F','G','H','I','J','K','L','M'].forEach(col => {
         const c = worksheet.getCell(`${col}${cur}`);
         c.border = bs;
-        c.alignment = { horizontal: 'center', vertical: 'middle' };
+        if (col !== 'B' && col !== 'H') {
+           c.alignment = { horizontal: 'center', vertical: 'middle' };
+        }
       });
-      worksheet.getRow(cur).height = 18;
+      worksheet.getRow(cur).height = 20;
       cur++;
     });
 
-    // Fill minimum 30 data rows
-    const minDataRows = 30;
-    const filledRows = reportPrintData.rows.length;
-    for (let extra = filledRows; extra < minDataRows; extra++) {
-      worksheet.getCell(`A${cur}`).value = extra + 1;
-      worksheet.mergeCells(`B${cur}:C${cur}`);
-      worksheet.mergeCells(`H${cur}:M${cur}`);
-      ['A','B','C','D','E','F','G','H','I','J','K','L','M'].forEach(col => {
-        const c = worksheet.getCell(`${col}${cur}`);
-        c.border = bs;
-        c.alignment = { horizontal: 'center', vertical: 'middle' };
-      });
-      worksheet.getRow(cur).height = 18;
-      cur++;
-    }
-
-    // ── Chemical / Ultrasonic / Hardness Test block ────────────────────────────
-    // Preview: 3 sections side-by-side, each 4 columns wide + 1 trailing blank col
-    // Mapped to 13 cols: Chemical=A-D, Ultrasonic=E-H, Hardness=I-L, Blank=M
-
     const testTitleRow = cur;
+    const testSectionColor = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8E8E8' } };
+    
     worksheet.mergeCells(`A${testTitleRow}:D${testTitleRow}`);
     const chemTitle = worksheet.getCell(`A${testTitleRow}`);
     chemTitle.value = 'Chemical Test';
     chemTitle.font = { bold: true }; chemTitle.alignment = { horizontal: 'center', vertical: 'middle' };
-    applyBorder(chemTitle); ['B','C','D'].forEach(c => applyBorder(worksheet.getCell(`${c}${testTitleRow}`)));
+    chemTitle.fill = testSectionColor;
+    applyBorderRange(['A','B','C','D'], testTitleRow);
 
     worksheet.mergeCells(`E${testTitleRow}:H${testTitleRow}`);
     const ultTitle = worksheet.getCell(`E${testTitleRow}`);
     ultTitle.value = 'Ultrasonic Test';
     ultTitle.font = { bold: true }; ultTitle.alignment = { horizontal: 'center', vertical: 'middle' };
-    applyBorder(ultTitle); ['F','G','H'].forEach(c => applyBorder(worksheet.getCell(`${c}${testTitleRow}`)));
+    ultTitle.fill = testSectionColor;
+    applyBorderRange(['E','F','G','H'], testTitleRow);
 
     worksheet.mergeCells(`I${testTitleRow}:L${testTitleRow}`);
     const hardTitle = worksheet.getCell(`I${testTitleRow}`);
     hardTitle.value = 'Hardness Test';
     hardTitle.font = { bold: true }; hardTitle.alignment = { horizontal: 'center', vertical: 'middle' };
-    applyBorder(hardTitle); ['J','K','L'].forEach(c => applyBorder(worksheet.getCell(`${c}${testTitleRow}`)));
+    hardTitle.fill = testSectionColor;
+    applyBorderRange(['I','J','K','L'], testTitleRow);
 
     applyBorder(worksheet.getCell(`M${testTitleRow}`));
     worksheet.getRow(testTitleRow).height = 18;
     cur++;
 
-    // Helper: write one row of the test block
-    //   chemLabel | chemVal | blank | blank | ultLabel | ultVal | blank | blank | hardLabel | hardVal | blank | blank | blank
+    const labelFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF3F4F6' } };
     const writeTestRow = (row, chemL, ultL, hardL) => {
-      const setTestCell = (col, val, bold = false) => {
+      const setTestCell = (col, val, isLabel = false) => {
         const c = worksheet.getCell(`${col}${row}`);
         c.value = val;
-        if (bold) c.font = { bold: true };
-        c.alignment = { horizontal: bold ? 'right' : 'left', vertical: 'middle', indent: 1 };
+        if (isLabel) {
+           c.font = { bold: true };
+           c.fill = labelFill;
+           c.alignment = { horizontal: 'right', vertical: 'middle', indent: 1 };
+        } else {
+           c.alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
+        }
         applyBorder(c);
       };
       setTestCell('A', chemL, true);
       setTestCell('B', ''); applyBorder(worksheet.getCell(`B${row}`));
       worksheet.mergeCells(`C${row}:D${row}`);
-      applyBorder(worksheet.getCell(`C${row}`)); applyBorder(worksheet.getCell(`D${row}`));
+      applyBorderRange(['C','D'], row);
 
       setTestCell('E', ultL, true);
       setTestCell('F', ''); applyBorder(worksheet.getCell(`F${row}`));
       worksheet.mergeCells(`G${row}:H${row}`);
-      applyBorder(worksheet.getCell(`G${row}`)); applyBorder(worksheet.getCell(`H${row}`));
+      applyBorderRange(['G','H'], row);
 
       setTestCell('I', hardL, true);
       setTestCell('J', ''); applyBorder(worksheet.getCell(`J${row}`));
       worksheet.mergeCells(`K${row}:L${row}`);
-      applyBorder(worksheet.getCell(`K${row}`)); applyBorder(worksheet.getCell(`L${row}`));
+      applyBorderRange(['K','L'], row);
 
       applyBorder(worksheet.getCell(`M${row}`));
       worksheet.getRow(row).height = 18;
     };
 
-    writeTestRow(cur,     'Date',           'Date',           'Date');          cur++;
-    writeTestRow(cur,     'Report No',      'Report No',      'W.O.NO');        cur++;
-    writeTestRow(cur,     'Authoriser',     'Authoriser',     'Hardness Value'); cur++;
-    writeTestRow(cur,     'Status',         'Status',         'Status');         cur++;
+    writeTestRow(cur, 'Date', 'Date', 'Date'); cur++;
+    writeTestRow(cur, 'Report No', 'Report No', 'W.O.NO'); cur++;
+    writeTestRow(cur, 'Authoriser', 'Authoriser', 'Hardness Value'); cur++;
+    writeTestRow(cur, 'Status', 'Status', 'Status'); cur++;
 
-    // ── Signatures row ─────────────────────────────────────────────────────────
-    const sigRow = cur;
-    worksheet.mergeCells(`A${sigRow}:C${sigRow + 1}`);
-    const sig1 = worksheet.getCell(`A${sigRow}`);
-    sig1.value = `Inspected by:\n\nShopfloor Operator`;
-    sig1.font = { bold: false };
-    sig1.alignment = { wrapText: true, vertical: 'top', horizontal: 'left', indent: 1 };
-    applyBorder(sig1);
-    ['B','C'].forEach(c => { applyBorder(worksheet.getCell(`${c}${sigRow}`)); applyBorder(worksheet.getCell(`${c}${sigRow + 1}`)); });
+    const footerRow = cur;
+    worksheet.mergeCells(`A${footerRow}:C${footerRow + 2}`);
+    const inspCell = worksheet.getCell(`A${footerRow}`);
+    inspCell.value = {
+      richText: [
+        { font: { bold: true }, text: 'Inspected by:' }
+      ]
+    };
+    inspCell.alignment = { vertical: 'top', horizontal: 'left', wrapText: true, indent: 1 };
+    applyBorderRange(['A','B','C'], footerRow);
+    applyBorderRange(['A','B','C'], footerRow+1);
+    applyBorderRange(['A','B','C'], footerRow+2);
 
-    worksheet.mergeCells(`D${sigRow}:J${sigRow + 1}`);
-    const sig2 = worksheet.getCell(`D${sigRow}`);
-    sig2.value = `Checked by:\n\n${reportPrintData.approvedBy}`;
-    sig2.font = { bold: false };
-    sig2.alignment = { wrapText: true, vertical: 'top', horizontal: 'left', indent: 1 };
-    applyBorder(sig2);
-    ['E','F','G','H','I','J'].forEach(c => { applyBorder(worksheet.getCell(`${c}${sigRow}`)); applyBorder(worksheet.getCell(`${c}${sigRow + 1}`)); });
+    worksheet.mergeCells(`D${footerRow}:J${footerRow + 2}`);
+    const checkCell = worksheet.getCell(`D${footerRow}`);
+    checkCell.value = {
+      richText: [
+        { font: { bold: true }, text: 'Checked by:' }
+      ]
+    };
+    checkCell.alignment = { vertical: 'top', horizontal: 'left', wrapText: true, indent: 1 };
+    ['D','E','F','G','H','I','J'].forEach(c => {
+       applyBorder(worksheet.getCell(`${c}${footerRow}`));
+       applyBorder(worksheet.getCell(`${c}${footerRow+1}`));
+       applyBorder(worksheet.getCell(`${c}${footerRow+2}`));
+    });
 
-    worksheet.mergeCells(`K${sigRow}:M${sigRow + 1}`);
-    applyBorder(worksheet.getCell(`K${sigRow}`));
-    ['L','M'].forEach(c => { applyBorder(worksheet.getCell(`${c}${sigRow}`)); applyBorder(worksheet.getCell(`${c}${sigRow + 1}`)); });
+    worksheet.mergeCells(`K${footerRow}:M${footerRow + 2}`);
+    ['K','L','M'].forEach(c => {
+       applyBorder(worksheet.getCell(`${c}${footerRow}`));
+       applyBorder(worksheet.getCell(`${c}${footerRow+1}`));
+       applyBorder(worksheet.getCell(`${c}${footerRow+2}`));
+    });
 
-    worksheet.getRow(sigRow).height = 22;
-    worksheet.getRow(sigRow + 1).height = 22;
+    worksheet.getRow(footerRow).height = 20;
+    worksheet.getRow(footerRow + 1).height = 20;
+    worksheet.getRow(footerRow + 2).height = 20;
 
     const buffer = await workbook.xlsx.writeBuffer();
     const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
@@ -2348,25 +2465,40 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
 
               {/* CMTI Inspection Report Preview/Print Modal */}
               <Modal
-                title="Inspection Report Preview"
+                title={
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingRight: 24 }}>
+                    <Text strong style={{ fontSize: 16 }}>Inspection Report Preview</Text>
+                    <Space>
+                      <Text strong>Report Data:</Text>
+                      <Select
+                        size="small"
+                        style={{ width: 150 }}
+                        value={reportQty}
+                        options={reportQtyOptions}
+                        onChange={setReportQty}
+                      />
+                    </Space>
+                  </div>
+                }
                 open={reportModalOpen}
                 onCancel={() => setReportModalOpen(false)}
                 width={1200}
                 centered
                 footer={[
                   <Button key="close" onClick={() => setReportModalOpen(false)}>Close</Button>,
-                  <Button key="excel" type="primary" icon={<CloudDownloadOutlined />} onClick={handleExportExcel}>Download Excel</Button>
+                  <Button key="excel" type="primary" icon={<CloudDownloadOutlined />} onClick={handleExportExcel} disabled={reportLoading}>Download Excel</Button>
                 ]}
               >
-                <div id="printable-report" style={{
-                  fontFamily: '"Times New Roman", Times, serif',
-                  color: '#000',
-                  padding: '10px 12px',
-                  background: '#fff',
-                  border: '2px solid #000',
-                  maxWidth: '100%',
-                  boxSizing: 'border-box',
-                }}>
+                <Spin spinning={reportLoading}>
+                  <div id="printable-report" style={{
+                    fontFamily: '"Times New Roman", Times, serif',
+                    color: '#000',
+                    padding: '10px 12px',
+                    background: '#fff',
+                    border: '2px solid #000',
+                    maxWidth: '100%',
+                    boxSizing: 'border-box',
+                  }}>
                   {/* 13 columns (A–M) — same grid as Excel export in handleExportExcel */}
                   <style>
                     {`
@@ -2511,17 +2643,7 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                         </tr>
                       ))}
 
-                      {Array.from({ length: Math.max(0, 15 - (reportPrintData?.rows?.length || 0)) }).map((_, i) => (
-                        <tr key={`empty-${i}`} style={{ height: 22 }}>
-                          <td>{(reportPrintData?.rows?.length || 0) + i + 1}</td>
-                          <td colSpan={2} />
-                          <td />
-                          <td />
-                          <td />
-                          <td />
-                          <td colSpan={6} />
-                        </tr>
-                      ))}
+
 
                       <tr className="report-section-head">
                         <td colSpan={4}>Chemical Test</td>
@@ -2581,17 +2703,16 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                       <tr style={{ minHeight: 56 }}>
                         <td colSpan={3} className="report-tl" style={{ verticalAlign: 'top' }}>
                           <b>Inspected by:</b>
-                          <div style={{ marginTop: 16 }}>Shopfloor Operator</div>
                         </td>
                         <td colSpan={7} className="report-tl" style={{ verticalAlign: 'top' }}>
                           <b>Checked by:</b>
-                          <div style={{ marginTop: 16 }}>{reportPrintData?.approvedBy}</div>
                         </td>
                         <td colSpan={3} />
                       </tr>
                     </tbody>
                   </table>
                 </div>
+                </Spin>
               </Modal>
             </div>
           ) : (
