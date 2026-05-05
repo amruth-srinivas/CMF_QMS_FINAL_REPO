@@ -1,413 +1,56 @@
 from fastapi import FastAPI
-
 from fastapi.middleware.cors import CORSMiddleware
 
-from DB.database import engine, MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY, MINIO_BUCKET_NAME, MINIO_SECURE
+from routers.products import router as products_router
+from routers.assemblies import router as assemblies_router
+from routers.part_types import router as part_types_router
+from routers.parts import router as parts_router
+from routers.operations import router as operations_router
+from routers.documents import router as documents_router
+from routers.tools import router as tools_router
+from routers.orders import router as orders_router
+from routers.order_documents import router as order_documents_router
+from routers.machines import router as machines_router
+from routers.operation_documents import router as operation_documents_router
+from routers.access_control import router as access_control_router
+from routers.out_source_parts_status import router as out_source_parts_status_router
+from routers.scheduling import router as scheduling_router
+from routers.pdf_annotation import router as pdf_annotation_router
+from routers.quality import router as quality_router
+from routers.qms_operator import router as qms_operator_router
+from routers.report import router as reports_router
 
-from DB.models import Base
+app = FastAPI(title="CMF QMS API")
 
-from DB.minio_client import init_minio_client
-
-
-
-# Import all routers
-
-from routers import (
-
-    products_router,
-
-    assemblies_router,
-
-    part_types_router,
-
-    parts_router,
-
-    operations_router,
-
-    documents_router,
-
-    tools_router,
-
-    orders_router,
-
-    order_documents_router,
-
-    machines_router,
-
-    operation_documents_router,
-
-    access_control_router,
-
-    out_source_parts_status_router,
-
-    scheduling_router,
-
-    pdf_annotation_router,
-
-    quality_router,
-
-    qms_operator_router,
-
-)
-
-
-
-
-# Initialize FastAPI app
-
-app = FastAPI(
-
-    title="CMF Backend API",
-
-    description="Configuration Management Framework Backend System with MinIO Integration",
-
-    version="2.0.0",
-
-    docs_url="/docs",
-
-    redoc_url="/redoc"
-
-)
-
-
-
-# Configure CORS
+# Frontend bases (e.g. qualityconfig.js) use .../api/v1 as the API root.
+API_V1_PREFIX = "/api/v1"
 
 app.add_middleware(
-
     CORSMiddleware,
-
-    allow_origins=["*"],  # Configure this with your frontend URL in production
-
+    allow_origins=["*"],
     allow_credentials=True,
-
     allow_methods=["*"],
-
     allow_headers=["*"],
-
 )
 
-
-
-
-
-@app.on_event("startup")
-
-async def startup_event():
-
-    """
-
-    Startup event handler
-
-    - Creates database tables
-
-    - Initializes MinIO client
-
-    """
-
-    print("=" * 60)
-
-    print("Starting CMF Backend API...")
-
-    print("=" * 60)
-
-
-
-    # Create database tables
-
-    try:
-
-        Base.metadata.create_all(bind=engine)
-
-        print("SUCCESS: Database tables created/verified")
-
-    except Exception as e:
-
-        print(f"ERROR: Error creating database tables: {e}")
-
-
-
-    # Initialize MinIO client
-
-    try:
-
-        init_minio_client(
-
-            endpoint=MINIO_ENDPOINT,
-
-            access_key=MINIO_ACCESS_KEY,
-
-            secret_key=MINIO_SECRET_KEY,
-
-            bucket_name=MINIO_BUCKET_NAME,
-
-            secure=MINIO_SECURE
-
-        )
-
-        print("SUCCESS: MinIO client initialized")
-
-        print(f"  - Endpoint: {MINIO_ENDPOINT}")
-
-        print(f"  - Bucket: {MINIO_BUCKET_NAME}")
-
-    except Exception as e:
-
-        print(f"ERROR: Error initializing MinIO client: {e}")
-
-        print("  Warning: Document upload functionality may not work")
-
-
-
-    print("=" * 60)
-
-    print("CMF Backend API is ready!")
-
-    print(f"Documentation available at: http://localhost:8765/docs")
-
-    print("=" * 60)
-
-
-
-
-
-# Include all routers with api/v1 prefix
-
-app.include_router(products_router, prefix="/api/v1")
-
-app.include_router(assemblies_router, prefix="/api/v1")
-
-app.include_router(part_types_router, prefix="/api/v1")
-
-app.include_router(parts_router, prefix="/api/v1")
-
-app.include_router(operations_router, prefix="/api/v1")
-
-app.include_router(documents_router, prefix="/api/v1")
-
-app.include_router(orders_router, prefix="/api/v1")
-
-app.include_router(access_control_router, prefix="/api/v1")
-
-app.include_router(machines_router, prefix="/api/v1")
-
-app.include_router(operation_documents_router, prefix="/api/v1")
-
-app.include_router(out_source_parts_status_router, prefix="/api/v1")
-
-app.include_router(scheduling_router, prefix="/api/v1")
-
-app.include_router(pdf_annotation_router, prefix="/api/v1")
-
-app.include_router(quality_router, prefix="/api/v1")
-
-app.include_router(qms_operator_router, prefix="/api/v1")
-
-
-@app.get("/")
-
-def root():
-
-    """Root endpoint"""
-
-    return {
-
-        "message": "Welcome to CMF Backend API with MinIO Integration",
-
-        "version": "2.0.0",
-
-        "features": [
-
-            "Complete CRUD operations for all entities",
-
-            "Document upload to MinIO storage",
-
-            "File download from MinIO",
-
-            "Support for PDF, DOCX, CSV, XLSX, and image files",
-
-            "General documents with folder structure and versioning",
-
-            "Machine documents with folder structure and versioning"
-
-        ],
-
-        "docs": "/docs",
-
-        "redoc": "/redoc"
-
-    }
-
-
-
-
-
-@app.get("/health")
-
-def health_check():
-
-    """Health check endpoint"""
-
-    return {
-
-        "status": "healthy",
-
-        "database": "connected",
-
-        "minio": "connected"
-
-    }
-
-
-
-
-
-@app.get("/info")
-
-def system_info():
-
-    """System information endpoint"""
-
-    return {
-
-        "api_version": "2.0.0",
-
-        "database": {
-
-            "host": "172.18.7.91",
-
-            "port": 5432,
-
-            "database": "cmf_backend"
-
-        },
-
-        "minio": {
-
-            "endpoint": MINIO_ENDPOINT,
-
-            "bucket": MINIO_BUCKET_NAME,
-
-            "secure": MINIO_SECURE
-
-        },
-
-        "supported_file_types": ["pdf", "docx", "csv", "xlsx", "doc", "xls", "txt", "jpg", "jpeg", "png", "gif"],
-
-        "endpoints": {
-
-            "products": "/api/v1/products",
-
-            "assemblies": "/api/v1/assemblies",
-
-            "part_types": "/api/v1/part-types",
-
-            "parts": "/api/v1/parts",
-
-            "operations": "/api/v1/operations",
-
-           
-
-            "documents": "/api/v1/documents",
-
-            "tools": "/api/v1/tools",
-
-            "customers": "/api/v1/customers",
-
-            "orders": "/api/v1/orders",
-
-            "order_documents": "/api/v1/order-documents",
-
-            "raw_materials": "/api/v1/rawmaterials",
-
-            "work_centers": "/api/v1/workcenters",
-
-            "machines": "/api/v1/machines",
-
-            "order_parts_raw_material_linked": "/api/v1/order-parts-raw-material-linked",
-
-            "operation_documents": "/api/v1/operation-documents",
-
-            "tools_list": "/api/v1/tools-list",
-
-            "inventory_requests": "/api/v1/inventory-requests",
-
-            "inventory_return_requests": "/api/v1/inventory-return-requests",
-
-            "tool_issues": "/api/v1/tool-issues",
-
-            "general_documents": "/general-documents",
-
-            "maintenance": "/api/v1/maintenance"
-
-        }
-
-    }
-
-
-
-
-
-if __name__ == "__main__":
-
-    import uvicorn
-
-
-
-    uvicorn.run(
-
-        app,
-
-        host="0.0.0.0",
-
-        port=3000,
-
-        log_level="info"
-
-    )
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# localsystem
-
-
-
-#  uvicorn main:app --reload --host 172.18.7.91 --port 8000
-
-
-
-#  uvicorn main:app --reload --host 172.18.7.86 --port 8000
-
-
-
-# python -m uvicorn main:app --reload --host 172.18.7.91 --port 8000
-
-
-
-# python -m uvicorn main:app --reload --host 172.18.100.76 --port 8000
-
-
-
-# server:
-
-# uvicorn main:app --reload --host 172.18.7.91 --port 3000
-
-#  uvicorn main:app --reload --host 172.18.7.86 --port 8000
+for router in (
+    products_router,
+    assemblies_router,
+    part_types_router,
+    parts_router,
+    operations_router,
+    documents_router,
+    tools_router,
+    orders_router,
+    order_documents_router,
+    machines_router,
+    operation_documents_router,
+    access_control_router,
+    out_source_parts_status_router,
+    scheduling_router,
+    pdf_annotation_router,
+    quality_router,
+    qms_operator_router,
+    reports_router,
+):
+    app.include_router(router, prefix=API_V1_PREFIX)

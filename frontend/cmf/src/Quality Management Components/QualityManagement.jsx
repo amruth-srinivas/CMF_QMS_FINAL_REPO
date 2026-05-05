@@ -7,6 +7,7 @@ import { Card, Tag, Typography, Empty, Space } from 'antd';
 import axios from 'axios';
 import { QUALITY_API_BASE_URL } from '../Config/qualityconfig';
 import ExcelJS from 'exceljs';
+import cmtiLogo from '../assets/cmti-logo.png';
 
 const { Sider, Content } = Layout;
 const { Text, Title } = Typography;
@@ -262,7 +263,7 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
     // A=SlNo, B-C=Specified Values, D=Zone, E=Sample1, F=Sample2, G=Sample3, H=Remarks
     // I-L used for Hardness test block (4 cols), M=trailing blank col
     worksheet.columns = [
-      { width: 8  }, // A  – Sl No
+      { width: 6.5  }, // A  – logo / Sl No
       { width: 22 }, // B  – Specified Values (part 1)
       { width: 10 }, // C  – Specified Values (part 2) / Zone overflow
       { width: 10 }, // D  – Zone
@@ -290,30 +291,45 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
       applyBorder(cell);
     };
 
-    // ── Row 1-2: CMTI | INSPECTION REPORT ──────────────────────────────────────
-    worksheet.mergeCells('A1:A2');
+    // ── Row 1: compact CMTI logo | INSPECTION REPORT (matches template density) ─
     const cmtiCell = worksheet.getCell('A1');
-    cmtiCell.value = 'CMTI';
-    cmtiCell.font = { bold: true, size: 16, color: { argb: 'FF003366' } };
+    cmtiCell.value = '';
     cmtiCell.alignment = { horizontal: 'center', vertical: 'middle' };
     applyBorder(cmtiCell);
+    try {
+      const logoRes = await fetch(cmtiLogo);
+      if (logoRes.ok) {
+        const buf = await logoRes.arrayBuffer();
+        const imageId = workbook.addImage({ buffer: buf, extension: 'png' });
+        worksheet.addImage(imageId, {
+          tl: { col: 0, row: 0 },
+          ext: { width: 88, height: 28 },
+        });
+      } else {
+        cmtiCell.value = 'CMTI';
+        cmtiCell.font = { bold: true, size: 12, color: { argb: 'FF003366' } };
+      }
+    } catch {
+      cmtiCell.value = 'CMTI';
+      cmtiCell.font = { bold: true, size: 12, color: { argb: 'FF003366' } };
+    }
 
-    worksheet.mergeCells('B1:M2');
+    worksheet.mergeCells('B1:M1');
     const titleCell = worksheet.getCell('B1');
     titleCell.value = 'INSPECTION REPORT';
-    titleCell.font = { bold: true, size: 18 };
+    titleCell.font = { bold: true, size: 14 };
     titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
     applyBorder(titleCell);
+    ['C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M'].forEach((c) => applyBorder(worksheet.getCell(`${c}1`)));
     worksheet.getRow(1).height = 30;
-    worksheet.getRow(2).height = 20;
 
     // ── Rows 3-5: Meta fields ───────────────────────────────────────────────────
     // Preview layout (11 cols mapped to 13):
     //  [Report No :] [     reportNo (cols B-D)    ] [Component Title:] [componentTitle(E-I)] [Date:] [date(J-M)]
     const metaRows = [
-      { row: 3, l1: 'Report No :',   v1: reportPrintData.reportNo,       l2: 'Component Title:', v2: reportPrintData.componentTitle, l3: 'Date:',     v3: reportPrintData.date               },
-      { row: 4, l1: 'Project No.:', v1: reportPrintData.projectNo,       l2: 'Drg No:',          v2: reportPrintData.drgNo,          l3: 'Sheet',      v3: '1 of 1'                           },
-      { row: 5, l1: 'Project Name:', v1: reportPrintData.projectName,    l2: 'Quantity:',        v2: reportPrintData.totalQuantity,  l3: 'Assembly',   v3: reportPrintData.assembly           },
+      { row: 2, l1: 'Report No :',   v1: reportPrintData.reportNo,       l2: 'Component Title:', v2: reportPrintData.componentTitle, l3: 'Date:',     v3: reportPrintData.date               },
+      { row: 3, l1: 'Project No.:', v1: reportPrintData.projectNo,       l2: 'Drg No:',          v2: reportPrintData.drgNo,          l3: 'Sheet',      v3: reportPrintData.sheet || '1 of 1' },
+      { row: 4, l1: 'Project Name:', v1: reportPrintData.projectName,    l2: 'Quantity:',        v2: reportPrintData.totalQuantity,  l3: 'Assembly',   v3: reportPrintData.assembly           },
     ];
 
     metaRows.forEach(({ row, l1, v1, l2, v2, l3, v3 }) => {
@@ -341,40 +357,37 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
       val3.value = v3; val3.alignment = { horizontal: 'center', vertical: 'middle' }; applyBorder(val3);
       ['L','M'].forEach(c => applyBorder(worksheet.getCell(`${c}${row}`)));
 
-      worksheet.getRow(row).height = 18;
+      worksheet.getRow(row).height = 16;
     });
 
-    // ── Rows 6-7: Table Header ─────────────────────────────────────────────────
-    // Preview: Sl No | Specified Values (2 cols) | Zone | Measured Values (3 sub cols) | Remarks
-    // Mapped: A | B-C | D | E F G | H-M (merged remarks)
+    // ── Rows 5-6: Table Header ─────────────────────────────────────────────────
+    worksheet.mergeCells('A5:A6');
+    styleHeader(worksheet.getCell('A5')); worksheet.getCell('A5').value = 'Sl No';
 
-    worksheet.mergeCells('A6:A7');
-    styleHeader(worksheet.getCell('A6')); worksheet.getCell('A6').value = 'Sl No';
+    worksheet.mergeCells('B5:C6');
+    styleHeader(worksheet.getCell('B5')); worksheet.getCell('B5').value = 'Specified Values';
+    applyBorder(worksheet.getCell('C5')); applyBorder(worksheet.getCell('C6'));
 
-    worksheet.mergeCells('B6:C7');
-    styleHeader(worksheet.getCell('B6')); worksheet.getCell('B6').value = 'Specified Values';
-    applyBorder(worksheet.getCell('C6')); applyBorder(worksheet.getCell('C7'));
+    worksheet.mergeCells('D5:D6');
+    styleHeader(worksheet.getCell('D5')); worksheet.getCell('D5').value = 'Zone';
 
-    worksheet.mergeCells('D6:D7');
-    styleHeader(worksheet.getCell('D6')); worksheet.getCell('D6').value = 'Zone';
+    worksheet.mergeCells('E5:G5');
+    styleHeader(worksheet.getCell('E5')); worksheet.getCell('E5').value = 'Measured Values';
+    applyBorder(worksheet.getCell('F5')); applyBorder(worksheet.getCell('G5'));
 
-    worksheet.mergeCells('E6:G6');
-    styleHeader(worksheet.getCell('E6')); worksheet.getCell('E6').value = 'Measured Values';
-    applyBorder(worksheet.getCell('F6')); applyBorder(worksheet.getCell('G6'));
+    worksheet.getCell('E6').value = '1'; styleHeader(worksheet.getCell('E6'));
+    worksheet.getCell('F6').value = '2'; styleHeader(worksheet.getCell('F6'));
+    worksheet.getCell('G6').value = '3'; styleHeader(worksheet.getCell('G6'));
 
-    worksheet.getCell('E7').value = '1'; styleHeader(worksheet.getCell('E7'));
-    worksheet.getCell('F7').value = '2'; styleHeader(worksheet.getCell('F7'));
-    worksheet.getCell('G7').value = '3'; styleHeader(worksheet.getCell('G7'));
+    worksheet.mergeCells('H5:M6');
+    styleHeader(worksheet.getCell('H5')); worksheet.getCell('H5').value = 'Remarks';
+    ['I','J','K','L','M'].forEach(c => { applyBorder(worksheet.getCell(`${c}5`)); applyBorder(worksheet.getCell(`${c}6`)); });
 
-    worksheet.mergeCells('H6:M7');
-    styleHeader(worksheet.getCell('H6')); worksheet.getCell('H6').value = 'Remarks';
-    ['I','J','K','L','M'].forEach(c => { applyBorder(worksheet.getCell(`${c}6`)); applyBorder(worksheet.getCell(`${c}7`)); });
+    worksheet.getRow(5).height = 16;
+    worksheet.getRow(6).height = 16;
 
-    worksheet.getRow(6).height = 18;
-    worksheet.getRow(7).height = 18;
-
-    // ── Rows 8+: Data rows ─────────────────────────────────────────────────────
-    let cur = 8;
+    // ── Rows 7+: Data rows ─────────────────────────────────────────────────────
+    let cur = 7;
     reportPrintData.rows.forEach(r => {
       worksheet.getCell(`A${cur}`).value = r.sno;
       worksheet.mergeCells(`B${cur}:C${cur}`);
@@ -2345,167 +2358,236 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                   <Button key="excel" type="primary" icon={<CloudDownloadOutlined />} onClick={handleExportExcel}>Download Excel</Button>
                 ]}
               >
-                <div id="printable-report" style={{ 
-                  fontFamily: 'serif', 
-                  color: '#000', 
-                  padding: '20px', 
+                <div id="printable-report" style={{
+                  fontFamily: '"Times New Roman", Times, serif',
+                  color: '#000',
+                  padding: '10px 12px',
                   background: '#fff',
-                  border: '2px solid #000'
+                  border: '2px solid #000',
+                  maxWidth: '100%',
+                  boxSizing: 'border-box',
                 }}>
-                  {/* Style for printing */}
+                  {/* 13 columns (A–M) — same grid as Excel export in handleExportExcel */}
                   <style>
                     {`
                       @media print {
                         body * { visibility: hidden; }
                         #printable-report, #printable-report * { visibility: visible; }
-                        #printable-report { 
-                          position: absolute; 
-                          left: 0; 
-                          top: 0; 
-                          width: 100%; 
+                        #printable-report {
+                          position: absolute;
+                          left: 0;
+                          top: 0;
+                          width: 100%;
                           margin: 0;
                           padding: 10px;
                           border: 2px solid #000;
                         }
                         @page { size: landscape; margin: 1cm; }
                       }
-                      .report-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-                      .report-table th, .report-table td { border: 1px solid #000; padding: 6px 4px; font-size: 11px; text-align: center; word-wrap: break-word; overflow: hidden; }
-                      .report-header-cell { height: 60px; font-weight: bold; font-size: 18px; }
-                      .report-label { text-align: left; background: #f8f9fa; font-weight: bold; width: 150px; }
-                      .report-value { text-align: left; background: #fff; }
-                      .main-col-sl { width: 50px; }
-                      .main-col-spec { width: 200px; }
-                      .main-col-zone { width: 60px; }
-                      .main-col-measure { width: 80px; }
-                      .main-col-remarks { width: auto; }
+                      #printable-report .report-table {
+                        width: 100%;
+                        border-collapse: collapse;
+                        table-layout: fixed;
+                      }
+                      #printable-report .report-table th,
+                      #printable-report .report-table td {
+                        border: 1px solid #000;
+                        padding: 4px 4px;
+                        font-size: 11px;
+                        text-align: center;
+                        vertical-align: middle;
+                        word-wrap: break-word;
+                        overflow-wrap: anywhere;
+                      }
+                      #printable-report .report-table tr.report-header-row td {
+                        padding: 2px 4px;
+                        line-height: 1.15;
+                      }
+                      #printable-report .report-table td.report-tl,
+                      #printable-report .report-table td.report-val {
+                        text-align: left;
+                      }
+                      #printable-report .report-header-title {
+                        font-weight: bold;
+                        font-size: 14px;
+                        letter-spacing: 0.04em;
+                        vertical-align: middle;
+                      }
+                      #printable-report .report-cmti {
+                        vertical-align: middle;
+                        background: #fff;
+                        padding: 2px 4px;
+                      }
+                      #printable-report .report-cmti-logo {
+                        display: block;
+                        max-height: 28px;
+                        max-width: 100%;
+                        width: auto;
+                        height: auto;
+                        margin: 0 auto;
+                        object-fit: contain;
+                      }
+                      #printable-report .report-meta-tight td {
+                        padding: 3px 4px;
+                        font-size: 10.5px;
+                      }
+                      #printable-report .report-meta-label {
+                        text-align: right;
+                        font-weight: bold;
+                        background: #f3f4f6;
+                      }
+                      #printable-report .report-section-head {
+                        font-weight: bold;
+                        background: #e8e8e8;
+                      }
+                      #printable-report .report-boc-head {
+                        font-weight: bold;
+                        background: #f0f0f0;
+                      }
                     `}
                   </style>
 
                   <table className="report-table">
+                    <colgroup>
+                      {[5.5, 9, 9, 9, 7.5, 7.5, 7.5, 10.5, 7.5, 7.5, 7.5, 7.5, 5].map((w, i) => (
+                        <col key={i} style={{ width: `${w}%` }} />
+                      ))}
+                    </colgroup>
                     <tbody>
-                      <tr>
-                        <td rowSpan={2} style={{ width: '80px' }}>
-                          <Title level={4} style={{ margin: 0, color: '#003366' }}>CMTI</Title>
+                      <tr className="report-header-row">
+                        <td className="report-cmti">
+                          <img src={cmtiLogo} alt="CMTI" className="report-cmti-logo" />
                         </td>
-                        <td colSpan={10} className="report-header-cell">INSPECTION REPORT</td>
-                      </tr>
-                      <tr></tr> {/* Spacing for rowspan consistency if needed */}
-                      
-                      <tr>
-                        <td className="report-label">Report No :</td>
-                        <td colSpan={4} className="report-value">{reportPrintData?.reportNo}</td>
-                        <td className="report-label">Component Title:</td>
-                        <td colSpan={3} className="report-value">{reportPrintData?.componentTitle}</td>
-                        <td className="report-label">Date:</td>
-                        <td className="report-value">{reportPrintData?.date}</td>
-                      </tr>
-                      <tr>
-                        <td className="report-label">Project No.:</td>
-                        <td colSpan={4} className="report-value">{reportPrintData?.projectNo}</td>
-                        <td className="report-label">Drg No:</td>
-                        <td colSpan={3} className="report-value">{reportPrintData?.drgNo}</td>
-                        <td className="report-label">Sheet</td>
-                        <td className="report-value">1 of 1</td>
-                      </tr>
-                      <tr>
-                        <td className="report-label">Project Name:</td>
-                        <td colSpan={4} className="report-value">{reportPrintData?.projectName}</td>
-                        <td className="report-label">Quantity:</td>
-                        <td colSpan={3} className="report-value">{reportPrintData?.totalQuantity}</td>
-                        <td className="report-label">Assembly</td>
-                        <td className="report-value">{reportPrintData?.assembly}</td>
+                        <td colSpan={12} className="report-header-title">INSPECTION REPORT</td>
                       </tr>
 
-                      <tr style={{ background: '#f0f0f0', fontWeight: 'bold' }}>
-                        <td className="main-col-sl" rowSpan={2}>Sl No</td>
-                        <td className="main-col-spec" rowSpan={2} colSpan={2}>Specified Values</td>
-                        <td className="main-col-zone" rowSpan={2}>Zone</td>
-                        <td colSpan={3}>Measured Values</td>
-                        <td className="main-col-remarks" rowSpan={2}>Remarks</td>
+                      <tr className="report-meta-tight">
+                        <td className="report-meta-label">Report No :</td>
+                        <td colSpan={3} className="report-val">{reportPrintData?.reportNo}</td>
+                        <td className="report-meta-label">Component Title:</td>
+                        <td colSpan={4} className="report-val">{reportPrintData?.componentTitle}</td>
+                        <td className="report-meta-label">Date:</td>
+                        <td colSpan={3} className="report-val">{reportPrintData?.date}</td>
                       </tr>
-                      <tr style={{ background: '#f0f0f0', fontWeight: 'bold' }}>
-                        <td className="main-col-measure">1</td>
-                        <td className="main-col-measure">2</td>
-                        <td className="main-col-measure">3</td>
+                      <tr className="report-meta-tight">
+                        <td className="report-meta-label">Project No.:</td>
+                        <td colSpan={3} className="report-val">{reportPrintData?.projectNo}</td>
+                        <td className="report-meta-label">Drg No:</td>
+                        <td colSpan={4} className="report-val">{reportPrintData?.drgNo}</td>
+                        <td className="report-meta-label">Sheet</td>
+                        <td colSpan={3} className="report-val">{reportPrintData?.sheet || '1 of 1'}</td>
+                      </tr>
+                      <tr className="report-meta-tight">
+                        <td className="report-meta-label">Project Name:</td>
+                        <td colSpan={3} className="report-val">{reportPrintData?.projectName}</td>
+                        <td className="report-meta-label">Quantity:</td>
+                        <td colSpan={4} className="report-val">{reportPrintData?.totalQuantity}</td>
+                        <td className="report-meta-label">Assembly</td>
+                        <td colSpan={3} className="report-val">{reportPrintData?.assembly}</td>
+                      </tr>
+
+                      <tr className="report-boc-head">
+                        <td rowSpan={2}>Sl No</td>
+                        <td rowSpan={2} colSpan={2}>Specified Values</td>
+                        <td rowSpan={2}>Zone</td>
+                        <td colSpan={3}>Measured Values</td>
+                        <td rowSpan={2} colSpan={6}>Remarks</td>
+                      </tr>
+                      <tr className="report-boc-head">
+                        <td>1</td>
+                        <td>2</td>
+                        <td>3</td>
                       </tr>
 
                       {reportPrintData?.rows?.map((row, i) => (
                         <tr key={i}>
                           <td>{row.sno}</td>
-                          <td colSpan={2} style={{ textAlign: 'left' }}>{row.specified}</td>
+                          <td colSpan={2} className="report-tl">{row.specified}</td>
                           <td>{row.zone}</td>
-                          {row.measurements.map((m, mi) => (
-                            <td key={mi}>{m !== '' ? m : ''}</td>
+                          {(row.measurements || []).slice(0, 3).map((m, mi) => (
+                            <td key={mi}>{m !== '' && m != null ? m : ''}</td>
                           ))}
-                          <td>{row.remarks}</td>
+                          <td colSpan={6} className="report-tl">{row.remarks || ''}</td>
                         </tr>
                       ))}
-                      
-                      {/* Empty rows to maintain table height if few chars */}
+
                       {Array.from({ length: Math.max(0, 15 - (reportPrintData?.rows?.length || 0)) }).map((_, i) => (
-                        <tr key={`empty-${i}`} style={{ height: '22px' }}>
+                        <tr key={`empty-${i}`} style={{ height: 22 }}>
                           <td>{(reportPrintData?.rows?.length || 0) + i + 1}</td>
-                          <td colSpan={2}></td>
-                          <td></td>
-                          <td></td><td></td><td></td>
-                          <td></td>
+                          <td colSpan={2} />
+                          <td />
+                          <td />
+                          <td />
+                          <td />
+                          <td colSpan={6} />
                         </tr>
                       ))}
 
-                      <tr>
-                        <td colSpan={4} style={{ fontWeight: 'bold', borderBottom: 'none' }}>Chemical Test</td>
-                        <td colSpan={4} style={{ fontWeight: 'bold', borderBottom: 'none' }}>Ultrasonic Test</td>
-                        <td colSpan={4} style={{ fontWeight: 'bold', borderBottom: 'none' }}>Hardness Test</td>
-                        <td></td>
+                      <tr className="report-section-head">
+                        <td colSpan={4}>Chemical Test</td>
+                        <td colSpan={4}>Ultrasonic Test</td>
+                        <td colSpan={4}>Hardness Test</td>
+                        <td />
                       </tr>
                       <tr>
-                        <td className="report-label">Date</td><td></td>
-                        <td colSpan={2} style={{ border: 'none' }}></td>
-                        <td className="report-label">Date</td><td></td>
-                        <td colSpan={2} style={{ border: 'none' }}></td>
-                        <td className="report-label">Date</td><td></td>
-                        <td colSpan={2} style={{ border: 'none' }}></td>
-                        <td></td>
+                        <td className="report-meta-label">Date</td>
+                        <td />
+                        <td colSpan={2} />
+                        <td className="report-meta-label">Date</td>
+                        <td />
+                        <td colSpan={2} />
+                        <td className="report-meta-label">Date</td>
+                        <td />
+                        <td colSpan={2} />
+                        <td />
                       </tr>
                       <tr>
-                        <td className="report-label">Report No</td><td></td>
-                        <td colSpan={2} style={{ border: 'none' }}></td>
-                        <td className="report-label">Report No</td><td></td>
-                        <td colSpan={2} style={{ border: 'none' }}></td>
-                        <td className="report-label">W.O.NO</td><td></td>
-                        <td colSpan={2} style={{ border: 'none' }}></td>
-                        <td></td>
+                        <td className="report-meta-label">Report No</td>
+                        <td />
+                        <td colSpan={2} />
+                        <td className="report-meta-label">Report No</td>
+                        <td />
+                        <td colSpan={2} />
+                        <td className="report-meta-label">W.O.NO</td>
+                        <td />
+                        <td colSpan={2} />
+                        <td />
                       </tr>
                       <tr>
-                        <td className="report-label">Authoriser</td><td></td>
-                        <td colSpan={2} style={{ border: 'none' }}></td>
-                        <td className="report-label">Authoriser</td><td></td>
-                        <td colSpan={2} style={{ border: 'none' }}></td>
-                        <td className="report-label">Hardness Value</td><td></td>
-                        <td colSpan={2} style={{ border: 'none' }}></td>
-                        <td></td>
+                        <td className="report-meta-label">Authoriser</td>
+                        <td />
+                        <td colSpan={2} />
+                        <td className="report-meta-label">Authoriser</td>
+                        <td />
+                        <td colSpan={2} />
+                        <td className="report-meta-label">Hardness Value</td>
+                        <td />
+                        <td colSpan={2} />
+                        <td />
                       </tr>
                       <tr>
-                        <td className="report-label">Status</td><td></td>
-                        <td colSpan={2} style={{ border: 'none' }}></td>
-                        <td className="report-label">Status</td><td></td>
-                        <td colSpan={2} style={{ border: 'none' }}></td>
-                        <td className="report-label">Status</td><td></td>
-                        <td colSpan={2} style={{ border: 'none' }}></td>
-                        <td></td>
+                        <td className="report-meta-label">Status</td>
+                        <td />
+                        <td colSpan={2} />
+                        <td className="report-meta-label">Status</td>
+                        <td />
+                        <td colSpan={2} />
+                        <td className="report-meta-label">Status</td>
+                        <td />
+                        <td colSpan={2} />
+                        <td />
                       </tr>
 
-                      <tr style={{ height: '60px' }}>
-                        <td colSpan={3} style={{ textAlign: 'left', verticalAlign: 'top' }}>
+                      <tr style={{ minHeight: 56 }}>
+                        <td colSpan={3} className="report-tl" style={{ verticalAlign: 'top' }}>
                           <b>Inspected by:</b>
-                          <div style={{ marginTop: '20px' }}>Shopfloor Operator</div>
+                          <div style={{ marginTop: 16 }}>Shopfloor Operator</div>
                         </td>
-                        <td colSpan={7} style={{ textAlign: 'left', verticalAlign: 'top' }}>
+                        <td colSpan={7} className="report-tl" style={{ verticalAlign: 'top' }}>
                           <b>Checked by:</b>
-                          <div style={{ marginTop: '20px' }}>{reportPrintData?.approvedBy}</div>
+                          <div style={{ marginTop: 16 }}>{reportPrintData?.approvedBy}</div>
                         </td>
-                        <td colSpan={3} style={{ borderRight: '1px solid #000' }}></td>
+                        <td colSpan={3} />
                       </tr>
                     </tbody>
                   </table>

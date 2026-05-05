@@ -31,6 +31,7 @@ from .quality import router as quality_router
 
 from .qms_operator import router as qms_operator_router
 
+from .report import router as reports_router
 
 
 __all__ = [
@@ -67,7 +68,8 @@ __all__ = [
 
     "quality_router",
 
-    "qms_operator_router"
+    "qms_operator_router",
+    
+    "reports_router"
 
 ]
-
