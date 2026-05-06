@@ -11,6 +11,8 @@ const InspectorNotesTable = ({
   onUpdateNote,
   onDeleteNote,
   onDeleteAll,
+  onNoteSelect,
+  selectedNoteId = null,
 }) => {
   const [newNoteText, setNewNoteText] = useState('');
   const [editingId, setEditingId] = useState(null);
@@ -137,7 +139,18 @@ const InspectorNotesTable = ({
         {data.length === 0 ? (
           <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={readOnly ? "No notes from supervisor" : "No notes yet. Use Notes tool to draw and extract notes."} style={{ marginTop: 24 }} />
         ) : (
-          <Table columns={cols} dataSource={data} size="small" bordered pagination={false} loading={loading} />
+          <Table 
+            columns={cols} 
+            dataSource={data} 
+            size="small" 
+            bordered 
+            pagination={false} 
+            loading={loading}
+            onRow={(row) => ({
+              onClick: () => onNoteSelect?.(row.id),
+              style: { cursor: 'pointer', background: selectedNoteId === row.id ? '#fffbe6' : 'inherit' }
+            })}
+          />
         )}
       </div>
     </div>

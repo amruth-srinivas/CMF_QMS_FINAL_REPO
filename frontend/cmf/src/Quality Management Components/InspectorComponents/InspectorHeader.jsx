@@ -1,5 +1,5 @@
 import React from 'react';
-import { Space, Button, Typography, Divider, Tag } from 'antd';
+import { Space, Button, Typography, Divider, Tag, Tooltip } from 'antd';
 import { ArrowLeftOutlined, ExportOutlined, SettingOutlined, CheckCircleOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 
@@ -111,14 +111,17 @@ const InspectorHeader = ({
             >
               PLAN
             </Button>
-            <Button
-              size="small"
-              type={mode === 'MEASURE' ? 'primary' : 'text'}
-              style={{ fontSize: '12px', minWidth: '70px', height: '28px' }}
-              onClick={() => onModeChange?.('MEASURE')}
-            >
-              MEASURE
-            </Button>
+            <Tooltip title={planStatus !== 'confirmed' ? "Confirm the inspection plan first to enable measurement mode" : ""}>
+              <Button
+                size="small"
+                type={mode === 'MEASURE' ? 'primary' : 'text'}
+                style={{ fontSize: '12px', minWidth: '70px', height: '28px' }}
+                onClick={() => onModeChange?.('MEASURE')}
+                disabled={planStatus !== 'confirmed'}
+              >
+                MEASURE
+              </Button>
+            </Tooltip>
           </div>
         )}
 

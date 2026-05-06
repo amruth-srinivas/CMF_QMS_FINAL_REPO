@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import { Table, Tag, Typography, Space, Button, Empty, Popover, Select, Divider, Input } from 'antd';
-import { FilterOutlined, UnorderedListOutlined, EditOutlined } from '@ant-design/icons';
+import { FilterOutlined, UnorderedListOutlined, EditOutlined, LeftOutlined, RightOutlined } from '@ant-design/icons';
 
 const { Text } = Typography;
 
@@ -619,20 +619,61 @@ const InspectorBOCTable = ({
         </Space>
         <Space wrap>
           {measureMode && (
-            <Space size={6} align="center">
-              <Text style={{ fontSize: 11 }}>Quantity :</Text>
-              <Select
-                size="small"
-                style={{ minWidth: 120 }}
-                value={quantityNo}
-                options={(quantityOptions || []).map((q) => ({
-                  ...q,
-                  disabled: quantityLocked && Number(q?.value) > 1,
-                }))}
-                onChange={onQuantityChange}
-                showSearch={false}
+            <div style={{ display: 'flex', alignItems: 'center', background: '#f5f5f5', padding: '2px 4px', borderRadius: 6, border: '1px solid #d9d9d9' }}>
+              <Button 
+                size="small" 
+                type="text" 
+                icon={<LeftOutlined style={{ fontSize: 10 }} />} 
+                disabled={quantityNo <= 1}
+                onClick={() => onQuantityChange?.(quantityNo - 1)}
+                style={{ width: 24, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
               />
-            </Space>
+              <Input
+                size="small"
+                defaultValue={quantityNo}
+                key={quantityNo} // Reset when quantityNo changes from outside
+                style={{ 
+                  width: 32, 
+                  textAlign: 'center', 
+                  padding: 0, 
+                  height: 22, 
+                  fontSize: 11, 
+                  fontWeight: 700, 
+                  border: 'none', 
+                  background: 'transparent',
+                  color: '#1890ff'
+                }}
+                onPressEnter={(e) => {
+                  const val = e.target.value.replace(/[^0-9]/g, '');
+                  const n = Number(val);
+                  const max = quantityOptions?.length || 1;
+                  if (n >= 1 && n <= max) {
+                    onQuantityChange?.(n);
+                  } else {
+                    e.target.value = quantityNo; // Revert
+                  }
+                }}
+                onBlur={(e) => {
+                  const val = e.target.value.replace(/[^0-9]/g, '');
+                  const n = Number(val);
+                  const max = quantityOptions?.length || 1;
+                  if (n >= 1 && n <= max) {
+                    onQuantityChange?.(n);
+                  } else {
+                    e.target.value = quantityNo; // Revert
+                  }
+                }}
+              />
+              <Text style={{ fontSize: 11, color: '#8c8c8c', userSelect: 'none', marginInline: '2px 4px' }}>/ {quantityOptions?.length || 1}</Text>
+              <Button 
+                size="small" 
+                type="text" 
+                icon={<RightOutlined style={{ fontSize: 10 }} />} 
+                disabled={quantityNo >= (quantityOptions?.length || 1)}
+                onClick={() => onQuantityChange?.(quantityNo + 1)}
+                style={{ width: 24, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+              />
+            </div>
           )}
           {typeof onDeleteSelected === 'function' && !planEditLocked && (
             <Button

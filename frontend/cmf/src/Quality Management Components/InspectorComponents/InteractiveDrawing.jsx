@@ -30,13 +30,16 @@ export const InteractiveDrawing = forwardRef(({
   balloons,
   activeBalloonId,
   selectedBalloonIds = [],
+  notes = [],
+  activeNoteId = null,
   onBalloonClick,
   onCanvasClick,
   onRegionSelect,
-  activeTool = 'select',
+  activeTool = 'pan',
   isLoading = false,
   balloonColor = 'blue',
-  sidebarOffset = 50
+  sidebarOffset = 50,
+  rotation = 0
 }, ref) => {
   const containerRef = useRef(null);
   const imageRef = useRef(null);
@@ -203,28 +206,21 @@ export const InteractiveDrawing = forwardRef(({
     animate(y, 0, { type: 'spring', stiffness: 300, damping: 30 });
   }, [calculateFitScale, scale, x, y, sidebarOffset]);
 
-  useImperativeHandle(ref, () => ({
-    zoomIn: () => {
-      const ns = Math.min(scale.get() * 1.5, 20);
-      animate(scale, ns, { type: 'spring', stiffness: 300, damping: 30 });
-    },
-    zoomOut: () => {
-      const fitScale = calculateFitScale();
-      const ns = Math.max(scale.get() / 1.5, Math.min(0.05, fitScale * 0.5));
-      animate(scale, ns, { type: 'spring', stiffness: 300, damping: 30 });
-    },
-    resetView: handleReset
-  }));
-
   const visibleBalloons = useMemo(() => {
-    return balloons.filter(b => b.page === pageNumber);
+    return (balloons || []).filter(b => b.page === pageNumber);
   }, [balloons, pageNumber]);
 
-  useEffect(() => {
-    if (!pageInfo || !visibleBalloons.length) return;
-    const targetIds = (selectedBalloonIds && selectedBalloonIds.length > 0) ? selectedBalloonIds : (activeBalloonId ? [activeBalloonId] : []);
+  const zoomToSelection = useCallback((targetIdOverride = null, selectedIdsOverride = null) => {
+    if (!pageInfo) return;
+    const targetIds = (selectedIdsOverride && selectedIdsOverride.length > 0) 
+      ? selectedIdsOverride.map(String) 
+      : (targetIdOverride ? [String(targetIdOverride)] : (selectedBalloonIds && selectedBalloonIds.length > 0 ? selectedBalloonIds.map(String) : (activeBalloonId ? [String(activeBalloonId)] : [])));
+    
     if (targetIds.length === 0) return;
-    const targets = visibleBalloons.filter(b => targetIds.includes(b.id));
+    const targets = [
+      ...visibleBalloons.filter(b => targetIds.includes(String(b.id))),
+      ...notes.filter(n => n.page === pageNumber && targetIds.includes(String(n.id)))
+    ];
     if (targets.length === 0) return;
     const containerW = containerSize.current.width;
     const containerH = containerSize.current.height;
@@ -256,35 +252,55 @@ export const InteractiveDrawing = forwardRef(({
     animate(scale, targetScale, { type: 'spring', stiffness: 120, damping: 24 });
     animate(x, -ox * targetScale, { type: 'spring', stiffness: 120, damping: 24 });
     animate(y, -oy * targetScale, { type: 'spring', stiffness: 120, damping: 24 });
-  }, [activeBalloonId, selectedBalloonIds, pageNumber, pageInfo, calculateFitScale, visibleBalloons]);
+  }, [pageInfo, visibleBalloons, activeBalloonId, selectedBalloonIds, calculateFitScale, scale, x, y]);
 
-  const handleWheel = (e) => {
-    e.preventDefault();
-    const delta = -e.deltaY;
-    const zoomFactor = Math.pow(2, delta / 1000);
-    const currentScale = scale.get();
-    let newScale = currentScale * zoomFactor;
-    const fitScale = calculateFitScale();
-    const minS = Math.min(0.05, fitScale * 0.5);
-    newScale = Math.min(Math.max(newScale, minS), 20);
-    if (newScale === currentScale) return;
-    if (containerRef.current) {
-      const rectW = containerSize.current.width;
-      const rectH = containerSize.current.height;
-      const mouseX = e.clientX - containerSize.current.left;
-      const mouseY = e.clientY - containerSize.current.top;
-      const cx = rectW / 2;
-      const cy = rectH / 2;
-      const currentX = x.get();
-      const currentY = y.get();
-      const ratio = newScale / currentScale;
-      const newX = currentX * ratio + (mouseX - cx) * (1 - ratio);
-      const newY = currentY * ratio + (mouseY - cy) * (1 - ratio);
-      x.set(newX);
-      y.set(newY);
-      scale.set(newScale);
-    }
-  };
+  useImperativeHandle(ref, () => ({
+    zoomIn: () => {
+      const ns = Math.min(scale.get() * 1.5, 20);
+      animate(scale, ns, { type: 'spring', stiffness: 300, damping: 30 });
+    },
+    zoomOut: () => {
+      const fitScale = calculateFitScale();
+      const ns = Math.max(scale.get() / 1.5, Math.min(0.05, fitScale * 0.5));
+      animate(scale, ns, { type: 'spring', stiffness: 300, damping: 30 });
+    },
+    resetView: handleReset,
+    zoomToSelection
+  }));
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const handleWheelManual = (e) => {
+      e.preventDefault();
+      const delta = -e.deltaY;
+      const zoomFactor = Math.pow(2, delta / 1000);
+      const currentScale = scale.get();
+      let newScale = currentScale * zoomFactor;
+      const fitScale = calculateFitScale();
+      const minS = Math.min(0.05, fitScale * 0.5);
+      newScale = Math.min(Math.max(newScale, minS), 20);
+      if (newScale === currentScale) return;
+      
+      const rect = containerSize.current;
+      if (rect.width > 0) {
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+        const cx = rect.width / 2;
+        const cy = rect.height / 2;
+        const currentX = x.get();
+        const currentY = y.get();
+        const ratio = newScale / currentScale;
+        const newX = currentX * ratio + (mouseX - cx) * (1 - ratio);
+        const newY = currentY * ratio + (mouseY - cy) * (1 - ratio);
+        x.set(newX);
+        y.set(newY);
+        scale.set(newScale);
+      }
+    };
+    el.addEventListener('wheel', handleWheelManual, { passive: false });
+    return () => el.removeEventListener('wheel', handleWheelManual);
+  }, [calculateFitScale, scale, x, y]);
 
   const [isDragging, setIsDragging] = useState(false);
   const theme = BALLOON_THEMES[balloonColor];
@@ -324,8 +340,32 @@ export const InteractiveDrawing = forwardRef(({
     });
   }, [visibleBalloons, activeBalloonId, pageInfo, imageSrc, theme, onBalloonClick]);
 
+  const renderedNotes = useMemo(() => {
+    if (!pageInfo || !imageSrc || !notes) return null;
+    return notes
+      .filter(n => n.page === pageNumber)
+      .map((n) => {
+        const isActive = String(n.id) === String(activeNoteId);
+        return (
+          <div
+            key={`note-${n.id}`}
+            className={cn(
+              "absolute pointer-events-none border-2 transition-all duration-300",
+              isActive ? "border-yellow-400 bg-yellow-400/20 z-40" : "border-yellow-400/30 border-dashed bg-yellow-400/5 z-10"
+            )}
+            style={{
+              left: `${(n.x / pageInfo.width) * 100}%`,
+              top: `${(n.y / pageInfo.height) * 100}%`,
+              width: `${(n.width / pageInfo.width) * 100}%`,
+              height: `${(n.height / pageInfo.height) * 100}%`,
+            }}
+          />
+        );
+      });
+  }, [notes, activeNoteId, pageInfo, imageSrc, pageNumber]);
+
   return (
-    <div ref={containerRef} className="relative w-full h-full overflow-hidden bg-slate-50 select-none group/canvas" onWheel={handleWheel}>
+    <div ref={containerRef} className="relative w-full h-full overflow-hidden bg-slate-50 select-none group/canvas">
       <div className="absolute inset-0 z-0 bg-[radial-gradient(rgba(100,116,139,0.25)_1.2px,transparent_1.2px)] [background-size:20px_20px]" />
       <div className="absolute inset-0 z-0 bg-[radial-gradient(rgba(100,116,139,0.4)_1.5px,transparent_1.5px)] [background-size:100px_100px]" />
 
@@ -348,13 +388,13 @@ export const InteractiveDrawing = forwardRef(({
       {imageSrc && pageInfo && (
         <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 overflow-visible pointer-events-none">
           <motion.div
-            drag={activeTool === 'pan' || activeTool === 'select'}
+            drag={activeTool === 'pan'}
             dragMomentum={false}
             dragConstraints={false}
             onDragStart={() => setIsDragging(true)}
             onDragEnd={() => setIsDragging(false)}
             onMouseDown={(e) => {
-              if ((activeTool !== 'balloon' && activeTool !== 'select' && activeTool !== 'stamp') || e.button !== 0) return;
+              if ((activeTool !== 'balloon' && activeTool !== 'select' && activeTool !== 'stamp' && activeTool !== 'notes') || e.button !== 0) return;
               const rect = e.currentTarget.getBoundingClientRect();
               const sx = (e.clientX - rect.left) / rect.width * pageInfo.width;
               const sy = (e.clientY - rect.top) / rect.height * pageInfo.height;
@@ -389,8 +429,15 @@ export const InteractiveDrawing = forwardRef(({
               setSelection(null);
               selectionRef.current = null;
             }}
-            style={{ scale, x, y, width: pageInfo.width, height: pageInfo.height, backfaceVisibility: 'hidden', transformStyle: 'preserve-3d' }}
-            className={cn("relative origin-center bg-white pointer-events-auto shrink-0 shadow-[0_30px_60px_-15px_rgba(0,0,0,0.15)]", isLoading ? "cursor-wait" : (isDragging ? "cursor-grabbing" : (activeTool === 'pan' || activeTool === 'select' ? "cursor-grab" : "cursor-crosshair")))}
+            style={{ scale, x, y, rotate: rotation, width: pageInfo.width, height: pageInfo.height, backfaceVisibility: 'hidden', transformStyle: 'preserve-3d' }}
+            className={cn(
+              "relative origin-center bg-white pointer-events-auto shrink-0 shadow-[0_30px_60px_-15px_rgba(0,0,0,0.15)]", 
+              isLoading ? "cursor-wait" : 
+              isDragging ? "cursor-grabbing" : 
+              activeTool === 'pan' ? "cursor-grab" : 
+              (activeTool === 'select' || activeTool === 'stamp' || activeTool === 'notes') ? "cursor-crosshair" : 
+              "cursor-default"
+            )}
             onClick={(e) => {
               if (activeTool === 'stamp') {
                 const rect = e.currentTarget.getBoundingClientRect();
@@ -408,7 +455,10 @@ export const InteractiveDrawing = forwardRef(({
             {selection && isSelecting && (
               <div className="absolute border-2 border-sky-500 bg-sky-500/10 pointer-events-none z-40" style={{ left: `${(Math.min(selection.startX, selection.curX) / pageInfo.width) * 100}%`, top: `${(Math.min(selection.startY, selection.curY) / pageInfo.height) * 100}%`, width: `${(Math.abs(selection.startX - selection.curX) / pageInfo.width) * 100}%`, height: `${(Math.abs(selection.startY - selection.curY) / pageInfo.height) * 100}%` }} />
             )}
-            <div className="absolute inset-0">{renderedBalloons}</div>
+            <div className="absolute inset-0">
+              {renderedNotes}
+              {renderedBalloons}
+            </div>
           </motion.div>
         </div>
       )}

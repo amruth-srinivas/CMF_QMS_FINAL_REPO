@@ -1,9 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Layout, Button, Modal, Table, Spin, Drawer, message, Select, Alert, Tooltip, Tabs } from 'antd';
+import { Layout, Button, Modal, Table, Spin, Drawer, message, Select, Alert, Tooltip, Tabs, Input, Card, Tag, Typography, Empty, Space } from 'antd';
 import { useNavigate, useSearchParams, useLocation } from 'react-router-dom';
-import { MenuOutlined, AppstoreOutlined, ShoppingCartOutlined, ClusterOutlined, ToolOutlined, InfoCircleOutlined, EyeOutlined, BuildOutlined, CheckCircleOutlined, CloudDownloadOutlined, EditOutlined, FilePdfOutlined } from "@ant-design/icons";
+import { MenuOutlined, AppstoreOutlined, ShoppingCartOutlined, ClusterOutlined, ToolOutlined, InfoCircleOutlined, EyeOutlined, BuildOutlined, CheckCircleOutlined, CloudDownloadOutlined, EditOutlined, FilePdfOutlined, LeftOutlined, RightOutlined } from "@ant-design/icons";
 import QualityManagementBOM from './QualityManagementBOM';
-import { Card, Tag, Typography, Empty, Space } from 'antd';
 import axios from 'axios';
 import { QUALITY_API_BASE_URL } from '../Config/qualityconfig';
 import ExcelJS from 'exceljs';
@@ -128,7 +127,8 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
     const isDrawingPart = (d) => {
       const type = (d.document_type || "").toLowerCase();
       const name = (d.document_name || "").toLowerCase();
-      return type.includes('2d') || type.includes('drawing') || name.includes('drawing') || name.includes('.pdf') || name.includes('.png') || name.includes('.jpg') || name.includes('.jpeg');
+      const url = (d.document_url || "").toLowerCase();
+      return type.includes('2d') || type.includes('drawing') || name.includes('drawing') || url.endsWith('.pdf') || url.endsWith('.png') || url.endsWith('.jpg') || url.endsWith('.jpeg');
     };
 
     let drawing = partDocuments.find(isDrawingPart);
@@ -136,6 +136,9 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
       drawing = partDocuments[0];
     }
     
+    const drawingPreviewUrl = drawing?.id
+      ? `${QUALITY_API_BASE_URL}/documents/${drawing.id}/preview`
+      : '';
     const qs = new URLSearchParams({
       partId,
       partNumber,
@@ -144,8 +147,8 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
       partName,
       operationName: 'Final Part Overview',
       operationNumber: '0',
-      drawingUrl: drawing?.document_url || '',
-      isPdf: String(drawing?.document_url?.toLowerCase().endsWith('.pdf') || false),
+      drawingUrl: drawingPreviewUrl,
+      isPdf: String((drawing?.document_url || '').toLowerCase().endsWith('.pdf') || false),
       fileName: drawing?.document_name || 'Part Drawing',
       mode: 'PLAN'
     });
@@ -184,6 +187,12 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
       return n === 0 || (typeof o.operation_name === 'string' && o.operation_name.toLowerCase().includes('final part'));
     }) || { id: 0, operation_number: '0', operation_name: 'Final Part Overview' };
 
+    const opNo = parseOpNo(op0);
+    if (isSupervisorView && inspectionPlanByOp[opNo] !== 'confirmed') {
+      message.warning('Please confirm the inspection plan for this operation before viewing measurements.');
+      return;
+    }
+
     setMeasurePartMode(false); // Show as a single operation view, not consolidated
     setMeasureContext({
       opId: op0.id,
@@ -201,6 +210,11 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
 
   const handleGenerateReport = async (record, isPartReport = false) => {
     const opNo = parseOpNo(record);
+    if (isSupervisorView && inspectionPlanByOp[opNo] !== 'confirmed') {
+        message.warning('Please confirm the inspection plan before generating a report.');
+        return;
+    }
+
     const partPk = selectedItem.id;
     const oid = Number(effectiveOrderId);
     
@@ -794,9 +808,9 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
       
       // Auto-set the first part 2D drawing as default preview
       const partDrawing = docs.find(d => d.document_type?.toLowerCase().includes('2d'));
-      if (partDrawing) {
-        setPreviewUrl(partDrawing.document_url);
-        setPreviewIsPdf(partDrawing.document_url?.toLowerCase().endsWith('.pdf'));
+      if (partDrawing?.id) {
+        setPreviewUrl(`${QUALITY_API_BASE_URL}/documents/${partDrawing.id}/preview`);
+        setPreviewIsPdf((partDrawing.document_url || '').toLowerCase().endsWith('.pdf'));
       }
     } catch (error) {
       console.error("Error fetching details:", error);
@@ -811,8 +825,9 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
       if (isBalloonOperationDocument(d)) return false;
       const type = (d.document_type || "").toLowerCase();
       const name = (d.document_name || "").toLowerCase();
-      const isPdfFile = name.toLowerCase().endsWith('.pdf') || type.includes('pdf');
-      return type.includes('2d') || type.includes('drawing') || name.includes('drawing') || isPdfFile || name.includes('.png') || name.includes('.jpg') || name.includes('.jpeg');
+      const url = (d.document_url || "").toLowerCase();
+      const isPdfFile = url.endsWith('.pdf') || type.includes('pdf');
+      return type.includes('2d') || type.includes('drawing') || name.includes('drawing') || isPdfFile || url.endsWith('.png') || url.endsWith('.jpg') || url.endsWith('.jpeg');
     };
 
     const nonBalloonOpDocs = (op.operation_documents || []).filter((d) => !isBalloonOperationDocument(d));
@@ -827,18 +842,16 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
     if (!previewDrawing) return { url: null, isPdf: false, name: '', apiDocumentId: null };
 
     const isPdf =
-      (previewDrawing.document_name || "").toLowerCase().endsWith('.pdf') ||
+      (previewDrawing.document_url || "").toLowerCase().endsWith('.pdf') ||
       (previewDrawing.document_type || "").toLowerCase().includes('pdf');
 
     const endpoint = previewDrawing.operation_id != null ? 'operation-documents' : 'documents';
-
-    const apiDocumentId = partDrawing?.id ?? previewDrawing.id;
 
     return {
       url: `${QUALITY_API_BASE_URL}/${endpoint}/${previewDrawing.id}/preview`,
       isPdf,
       name: previewDrawing.document_name,
-      apiDocumentId,
+      apiDocumentId: previewDrawing.id,
     };
   };
 
@@ -888,15 +901,12 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
         }),
       ]);
       const docs = Array.isArray(docsRes.data) ? docsRes.data : [];
-      const baloonDoc = docs
-        .filter(isBalloonOperationDocument)
-        .sort((a, b) => Number(b?.id || 0) - Number(a?.id || 0))[0];
-      const name = baloonDoc?.document_name || '';
-      const isPdf = /\.pdf$/i.test(name);
+      const { url, isPdf, name, apiDocumentId } = getDrawingInfo({ ...record, operation_documents: docs });
+
       setPlanDrawingIsPdf(isPdf);
       setPlanDrawingFileName(name || null);
-      setPlanDrawingUrl(baloonDoc ? `${QUALITY_API_BASE_URL}/operation-documents/${baloonDoc.id}/preview` : null);
-      setPlanBalloonDocumentId(baloonDoc?.id ?? null);
+      setPlanDrawingUrl(url);
+      setPlanBalloonDocumentId(apiDocumentId);
       setPlanTableRows(Array.isArray(bocRes.data) ? bocRes.data : []);
 
       let canEditBoc = false;
@@ -1197,18 +1207,15 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
 
       setFtpApproveRows(Array.isArray(res.data) ? res.data : []);
 
-      // Handle ballooned drawing
+      // Handle original drawing for interactive balloons
       const docs = Array.isArray(docsRes.data) ? docsRes.data : [];
-      const baloonDoc = docs
-        .filter(isBalloonOperationDocument)
-        .sort((a, b) => Number(b?.id || 0) - Number(a?.id || 0))[0];
+      const { url, isPdf, name, apiDocumentId } = getDrawingInfo({ ...record, operation_documents: docs });
 
-      if (baloonDoc) {
-        const name = baloonDoc.document_name || '';
-        setPlanDrawingIsPdf(/\.pdf$/i.test(name));
+      if (url) {
+        setPlanDrawingIsPdf(isPdf);
         setPlanDrawingFileName(name || null);
-        setPlanDrawingUrl(`${QUALITY_API_BASE_URL}/operation-documents/${baloonDoc.id}/preview`);
-        setPlanBalloonDocumentId(baloonDoc.id);
+        setPlanDrawingUrl(url);
+        setPlanBalloonDocumentId(apiDocumentId);
       } else {
         setPlanBalloonDocumentId(null);
       }
@@ -1291,6 +1298,11 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
       return;
     }
     const opNo = parseOpNo(record);
+    if (isSupervisorView && inspectionPlanByOp[opNo] !== 'confirmed') {
+      message.warning('Please confirm the inspection plan for this operation before viewing measurements.');
+      return;
+    }
+
     setMeasureContext({
       opNo,
       opName: record?.operation_name || '',
@@ -1463,8 +1475,11 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
       drawing = partDocuments[0];
     }
 
-    setPreviewUrl(drawing?.document_url || null);
-    setPreviewIsPdf(drawing?.document_url?.toLowerCase().endsWith('.pdf') || false);
+    const previewEndpoint = drawing?.id
+      ? `${QUALITY_API_BASE_URL}/documents/${drawing.id}/preview`
+      : null;
+    setPreviewUrl(previewEndpoint);
+    setPreviewIsPdf((drawing?.document_url || '').toLowerCase().endsWith('.pdf') || false);
     setPreviewModalVisible(true);
   };
 
@@ -2074,15 +2089,107 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                         </Tag>
                       )}
                     </div>
-                    <Space align="center">
+                    <Space align="center" size={12}>
                       <Text style={{ fontFamily: '"JetBrains Mono", "Consolas", "Courier New", monospace' }}><b>Qty:</b></Text>
-                      <Select
-                        size="small"
-                        style={{ width: 110 }}
-                        value={measureQty}
-                        options={measureQtyOptions}
-                        onChange={setMeasureQty}
-                      />
+                      <div style={{ display: 'flex', alignItems: 'center', background: '#f5f5f5', padding: '2px 4px', borderRadius: 6, border: '1px solid #d9d9d9' }}>
+                        <Button 
+                          size="small" 
+                          type="text" 
+                          icon={<LeftOutlined style={{ fontSize: 10 }} />} 
+                          disabled={typeof measureQty !== 'number' || measureQty <= 1}
+                          onClick={() => setMeasureQty(measureQty - 1)}
+                          style={{ width: 24, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                        />
+                        <Input
+                          size="small"
+                          defaultValue={measureQty === 'consolidated' ? 'ALL' : measureQty}
+                          key={measureQty}
+                          style={{ 
+                            width: 32, 
+                            textAlign: 'center', 
+                            padding: 0, 
+                            height: 22, 
+                            fontSize: 11, 
+                            fontWeight: 700, 
+                            border: 'none', 
+                            background: 'transparent',
+                            color: '#1890ff'
+                          }}
+                          onPressEnter={(e) => {
+                            const val = e.target.value.replace(/[^0-9]/g, '');
+                            if (val === '') {
+                                e.target.value = measureQty === 'consolidated' ? 'ALL' : measureQty;
+                                return;
+                            }
+                            const n = Number(val);
+                            const max = measureQtyOptions.filter(o => typeof o.value === 'number').length;
+                            if (n >= 1 && n <= max) {
+                              if (n > 1 && measureFtpStatus !== 'approved') {
+                                message.warning('Please obtain FTP approval for quantity 1 before proceeding to other quantities.');
+                                e.target.value = measureQty;
+                                return;
+                              }
+                              setMeasureQty(n);
+                            } else {
+                                e.target.value = measureQty === 'consolidated' ? 'ALL' : measureQty;
+                            }
+                          }}
+                          onBlur={(e) => {
+                            const val = e.target.value.replace(/[^0-9]/g, '');
+                            if (val === '') {
+                                e.target.value = measureQty === 'consolidated' ? 'ALL' : measureQty;
+                                return;
+                            }
+                            const n = Number(val);
+                            const max = measureQtyOptions.filter(o => typeof o.value === 'number').length;
+                            if (n >= 1 && n <= max) {
+                              if (n > 1 && measureFtpStatus !== 'approved') {
+                                message.warning('Please obtain FTP approval for quantity 1 before proceeding to other quantities.');
+                                e.target.value = measureQty;
+                                return;
+                              }
+                              setMeasureQty(n);
+                            } else {
+                                e.target.value = measureQty === 'consolidated' ? 'ALL' : measureQty;
+                            }
+                          }}
+                        />
+                        <Text style={{ fontSize: 11, color: '#8c8c8c', userSelect: 'none', marginInline: '2px 4px' }}>/ {measureQtyOptions.filter(o => typeof o.value === 'number').length}</Text>
+                        <Button 
+                          size="small" 
+                          type="text" 
+                          icon={<RightOutlined style={{ fontSize: 10 }} />} 
+                          disabled={typeof measureQty !== 'number' || measureQty >= measureQtyOptions.filter(o => typeof o.value === 'number').length}
+                          onClick={() => {
+                            const next = measureQty + 1;
+                            if (next > 1 && measureFtpStatus !== 'approved') {
+                              message.warning('Please obtain FTP approval for quantity 1 before proceeding to other quantities.');
+                              return;
+                            }
+                            setMeasureQty(next);
+                          }}
+                          style={{ width: 24, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                        />
+                      </div>
+                      {measureQtyOptions.some(o => o.value === 'consolidated') && (
+                        <Button
+                          size="small"
+                          type={measureQty === 'consolidated' ? 'primary' : 'default'}
+                          onClick={() => {
+                            if (measureQty !== 'consolidated' && measureFtpStatus !== 'approved') {
+                              // If trying to go to consolidated from numeric? 
+                              // Actually consolidated usually shows all, maybe allow it?
+                              // But user said "other quantities". Consolidated includes other quantities.
+                              message.warning('Please obtain FTP approval for quantity 1 before viewing consolidated data.');
+                              return;
+                            }
+                            setMeasureQty(measureQty === 'consolidated' ? 1 : 'consolidated');
+                          }}
+                          style={{ fontSize: 11, height: 24 }}
+                        >
+                          CONSOLIDATED
+                        </Button>
+                      )}
                     </Space>
                   </div>
                   {measureQty > 1 && measureFtpStatus !== 'approved' ? (

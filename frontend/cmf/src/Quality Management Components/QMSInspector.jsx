@@ -103,6 +103,7 @@ const QMSInspector = () => {
   const [filterZones, setFilterZones] = useState([]);
   const [selectedRowIds, setSelectedRowIds] = useState([]);
   const [lastClickedRowId, setLastClickedRowId] = useState(null);
+  const [selectedNoteId, setSelectedNoteId] = useState(null);
   const [stampModalOpen, setStampModalOpen] = useState(false);
   const [pendingStampRegion, setPendingStampRegion] = useState(null);
   const [stampSaving, setStampSaving] = useState(false);
@@ -191,10 +192,14 @@ const QMSInspector = () => {
         if (pid) {
           const res = await axios.get(`${QUALITY_API_BASE_URL}/documents/part/${pid}`);
           const docs = Array.isArray(res.data) ? res.data : [];
-          const best = docs.find(d => 
+          const nonBalloonDocs = docs.filter(d => {
+            const t = String(d.document_type || '').toLowerCase();
+            return !(t === 'baloon' || t === 'balloon' || t.includes('balloon'));
+          });
+          const best = nonBalloonDocs.find(d => 
             d.document_type?.toLowerCase().includes('2d') || 
             d.document_name?.toLowerCase().includes('drawing')
-          ) || docs[0];
+          ) || nonBalloonDocs[0] || docs[0];
           
           if (best && !cancelled) {
             setFetchedDocumentId(best.id);
@@ -208,10 +213,14 @@ const QMSInspector = () => {
         if (oid) {
           const res = await axios.get(`${QUALITY_API_BASE_URL}/operation-documents/operation/${oid}`);
           const docs = Array.isArray(res.data) ? res.data : [];
-          const best = docs.find(d => 
+          const nonBalloonDocs = docs.filter(d => {
+            const t = String(d.document_type || '').toLowerCase();
+            return !(t === 'baloon' || t === 'balloon' || t.includes('balloon'));
+          });
+          const best = nonBalloonDocs.find(d => 
             d.document_type?.toLowerCase().includes('2d') || 
             d.document_name?.toLowerCase().includes('drawing')
-          ) || docs[0];
+          ) || nonBalloonDocs[0] || docs[0];
 
           if (best && !cancelled) {
             setFetchedDocumentId(best.id);
@@ -584,6 +593,11 @@ const QMSInspector = () => {
   const handleSelectedIdsChange = useCallback((ids, lastId) => {
     setSelectedRowIds(ids);
     setLastClickedRowId(lastId ?? null);
+    if (lastId) {
+      drawingRef.current?.zoomToSelection(String(lastId));
+    } else if (ids.length > 0) {
+      drawingRef.current?.zoomToSelection(null, ids.map(String));
+    }
   }, []);
 
   const handleDeleteSelectedRows = useCallback(() => {
@@ -850,25 +864,24 @@ const QMSInspector = () => {
       onOk: async () => {
         try {
           // Only attempt PDF export and upload for real operations (not op 0 / Final Part)
+          // Note: With InteractiveDrawing, we rely on DB coordinates, but we still try to upload a snapshot if available.
           if (!isFinalPart && opIdInt > 0) {
             const exporter = exportBalloonedRef.current;
-            if (typeof exporter !== 'function') {
-              throw new Error('Drawing is still rendering. Please wait a moment and try again.');
+            if (typeof exporter === 'function') {
+              const blob = await exporter();
+              if (blob) {
+                const fd = new FormData();
+                const safePart = (partNumber || 'part').replace(/[^a-zA-Z0-9_-]+/g, '_');
+                const fileName = `${safePart}_op${opNoInt}_balloon.pdf`;
+                fd.append('operation_id', String(opIdInt));
+                fd.append('document_type', 'Balloon document');
+                fd.append('document_version', '1.0');
+                fd.append('files', new File([blob], fileName, { type: 'application/pdf' }));
+                await axios.post(`${QUALITY_API_BASE_URL}/operation-documents/upload/`, fd, {
+                  headers: { 'Content-Type': 'multipart/form-data' },
+                });
+              }
             }
-            const blob = await exporter();
-            if (!blob) {
-              throw new Error('Failed to build balloon PDF.');
-            }
-            const fd = new FormData();
-            const safePart = (partNumber || 'part').replace(/[^a-zA-Z0-9_-]+/g, '_');
-            const fileName = `${safePart}_op${opNoInt}_balloon.pdf`;
-            fd.append('operation_id', String(opIdInt));
-            fd.append('document_type', 'Balloon document');
-            fd.append('document_version', '1.0');
-            fd.append('files', new File([blob], fileName, { type: 'application/pdf' }));
-            await axios.post(`${QUALITY_API_BASE_URL}/operation-documents/upload/`, fd, {
-              headers: { 'Content-Type': 'multipart/form-data' },
-            });
           }
 
           let confirmUser = '';
@@ -1111,7 +1124,7 @@ const QMSInspector = () => {
             scale_factor: 1.0,
             pdf_content_type: 'normal',
           });
-          await fetchMasterBoc();
+          await onDetectionComplete(res.data);
           const n = res.data?.count ?? 0;
           if (n > 0) {
             message.success(`Detected ${n} characteristic(s)`);
@@ -1131,7 +1144,7 @@ const QMSInspector = () => {
         handleNoteRegion(box);
       }
     },
-    [activeTool, documentId, partId, fetchMasterBoc, handleStampRegion, handleNoteRegion, message],
+    [activeTool, documentId, partId, onDetectionComplete, handleStampRegion, handleNoteRegion, message],
   );
 
   const canDetect = Boolean(documentId && partId);
@@ -1186,7 +1199,14 @@ const QMSInspector = () => {
         partName={partName}
         operationName={operationName}
         mode={inspectorMode}
-        onModeChange={isOperatorView ? undefined : setInspectorMode}
+        onModeChange={(newMode) => {
+          if (isOperatorView) return;
+          if (newMode === 'MEASURE' && planStatus !== 'confirmed') {
+            message.warning('Please confirm the inspection plan before proceeding to measurement.');
+            return;
+          }
+          setInspectorMode(newMode);
+        }}
         planStatus={planStatus}
         confirmedByUsername={confirmedByUsername}
         onConfirmPlan={isOperatorView ? undefined : handleConfirmPlan}
@@ -1255,12 +1275,18 @@ const QMSInspector = () => {
                 balloons={interactiveBalloons}
                 activeBalloonId={lastClickedRowId ? String(lastClickedRowId) : null}
                 selectedBalloonIds={selectedRowIds.map(String)}
-                onBalloonClick={(b) => setLastClickedRowId(Number(b.id))}
+                onBalloonClick={(b) => {
+                  setLastClickedRowId(Number(b.id));
+                  drawingRef.current?.zoomToSelection(b.id);
+                }}
                 onRegionSelect={handleRegionSelect}
                 activeTool={activeTool}
+                notes={notes}
+                activeNoteId={selectedNoteId}
                 isLoading={saving}
                 balloonColor="blue"
                 sidebarOffset={50}
+                rotation={pdfRotation}
               />
             </div>
           )}
@@ -1331,7 +1357,13 @@ const QMSInspector = () => {
                     onMeasurePatch={handleMeasurePatch}
                     quantityOptions={quantityOptions}
                     quantityNo={quantityNo}
-                    onQuantityChange={setQuantityNo}
+                    onQuantityChange={(newQty) => {
+                      if (newQty > 1 && !ftpApproved) {
+                        message.warning('Please obtain FTP approval for quantity 1 before proceeding to other quantities.');
+                        return;
+                      }
+                      setQuantityNo(newQty);
+                    }}
                     quantityLocked={!ftpApproved}
                     planEditLocked={bocEditLocked}
                   />
@@ -1345,6 +1377,11 @@ const QMSInspector = () => {
                     notes={notes}
                     loading={notesLoading}
                     readOnly={isOperatorView}
+                    selectedNoteId={selectedNoteId}
+                    onNoteSelect={(id) => {
+                      setSelectedNoteId(id);
+                      drawingRef.current?.zoomToSelection(id);
+                    }}
                     onAddNote={async (noteText) => {
                       const pid = partId ? Number(partId) : null;
                       if (!pid || !documentId) return;
