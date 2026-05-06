@@ -232,7 +232,7 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
         }
 
         const qOpts = Array.from({ length: qtyMax }, (_, i) => ({ value: i + 1, label: `Qty ${i + 1}` }));
-        qOpts.unshift({ value: 'consolidated', label: 'Consolidated' });
+        qOpts.push({ value: 'consolidated', label: 'Consolidated' });
         setReportQtyOptions(qOpts);
         setReportQty(1);
 
@@ -2091,105 +2091,26 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                     </div>
                     <Space align="center" size={12}>
                       <Text style={{ fontFamily: '"JetBrains Mono", "Consolas", "Courier New", monospace' }}><b>Qty:</b></Text>
-                      <div style={{ display: 'flex', alignItems: 'center', background: '#f5f5f5', padding: '2px 4px', borderRadius: 6, border: '1px solid #d9d9d9' }}>
-                        <Button 
-                          size="small" 
-                          type="text" 
-                          icon={<LeftOutlined style={{ fontSize: 10 }} />} 
-                          disabled={typeof measureQty !== 'number' || measureQty <= 1}
-                          onClick={() => setMeasureQty(measureQty - 1)}
-                          style={{ width: 24, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                        />
-                        <Input
-                          size="small"
-                          defaultValue={measureQty === 'consolidated' ? 'ALL' : measureQty}
-                          key={measureQty}
-                          style={{ 
-                            width: 32, 
-                            textAlign: 'center', 
-                            padding: 0, 
-                            height: 22, 
-                            fontSize: 11, 
-                            fontWeight: 700, 
-                            border: 'none', 
-                            background: 'transparent',
-                            color: '#1890ff'
-                          }}
-                          onPressEnter={(e) => {
-                            const val = e.target.value.replace(/[^0-9]/g, '');
-                            if (val === '') {
-                                e.target.value = measureQty === 'consolidated' ? 'ALL' : measureQty;
-                                return;
-                            }
-                            const n = Number(val);
-                            const max = measureQtyOptions.filter(o => typeof o.value === 'number').length;
-                            if (n >= 1 && n <= max) {
-                              if (n > 1 && measureFtpStatus !== 'approved') {
-                                message.warning('Please obtain FTP approval for quantity 1 before proceeding to other quantities.');
-                                e.target.value = measureQty;
-                                return;
-                              }
-                              setMeasureQty(n);
-                            } else {
-                                e.target.value = measureQty === 'consolidated' ? 'ALL' : measureQty;
-                            }
-                          }}
-                          onBlur={(e) => {
-                            const val = e.target.value.replace(/[^0-9]/g, '');
-                            if (val === '') {
-                                e.target.value = measureQty === 'consolidated' ? 'ALL' : measureQty;
-                                return;
-                            }
-                            const n = Number(val);
-                            const max = measureQtyOptions.filter(o => typeof o.value === 'number').length;
-                            if (n >= 1 && n <= max) {
-                              if (n > 1 && measureFtpStatus !== 'approved') {
-                                message.warning('Please obtain FTP approval for quantity 1 before proceeding to other quantities.');
-                                e.target.value = measureQty;
-                                return;
-                              }
-                              setMeasureQty(n);
-                            } else {
-                                e.target.value = measureQty === 'consolidated' ? 'ALL' : measureQty;
-                            }
-                          }}
-                        />
-                        <Text style={{ fontSize: 11, color: '#8c8c8c', userSelect: 'none', marginInline: '2px 4px' }}>/ {measureQtyOptions.filter(o => typeof o.value === 'number').length}</Text>
-                        <Button 
-                          size="small" 
-                          type="text" 
-                          icon={<RightOutlined style={{ fontSize: 10 }} />} 
-                          disabled={typeof measureQty !== 'number' || measureQty >= measureQtyOptions.filter(o => typeof o.value === 'number').length}
-                          onClick={() => {
-                            const next = measureQty + 1;
-                            if (next > 1 && measureFtpStatus !== 'approved') {
-                              message.warning('Please obtain FTP approval for quantity 1 before proceeding to other quantities.');
-                              return;
-                            }
-                            setMeasureQty(next);
-                          }}
-                          style={{ width: 24, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                        />
-                      </div>
-                      {measureQtyOptions.some(o => o.value === 'consolidated') && (
-                        <Button
-                          size="small"
-                          type={measureQty === 'consolidated' ? 'primary' : 'default'}
-                          onClick={() => {
-                            if (measureQty !== 'consolidated' && measureFtpStatus !== 'approved') {
-                              // If trying to go to consolidated from numeric? 
-                              // Actually consolidated usually shows all, maybe allow it?
-                              // But user said "other quantities". Consolidated includes other quantities.
+                      <Select
+                        size="small"
+                        style={{ width: 140 }}
+                        value={measureQty}
+                        options={measureQtyOptions}
+                        onChange={(val) => {
+                          if (val === 'consolidated') {
+                            if (measureFtpStatus !== 'approved') {
                               message.warning('Please obtain FTP approval for quantity 1 before viewing consolidated data.');
                               return;
                             }
-                            setMeasureQty(measureQty === 'consolidated' ? 1 : 'consolidated');
-                          }}
-                          style={{ fontSize: 11, height: 24 }}
-                        >
-                          CONSOLIDATED
-                        </Button>
-                      )}
+                          } else if (typeof val === 'number' && val > 1) {
+                            if (measureFtpStatus !== 'approved') {
+                              message.warning('Please obtain FTP approval for quantity 1 before proceeding to other quantities.');
+                              return;
+                            }
+                          }
+                          setMeasureQty(val);
+                        }}
+                      />
                     </Space>
                   </div>
                   {measureQty > 1 && measureFtpStatus !== 'approved' ? (
