@@ -6,6 +6,7 @@ import { QUALITY_API_BASE_URL } from '../Config/qualityconfig';
 import InspectorHeader from './InspectorComponents/InspectorHeader';
 import InspectorSidebar from './InspectorComponents/InspectorSidebar';
 import PdfInspectionPlanCanvas, { ZOOM_MAX, ZOOM_MIN, ZOOM_STEP } from './InspectorComponents/PdfInspectionPlanCanvas';
+import InteractiveDrawing from './InspectorComponents/InteractiveDrawing';
 import InspectorBOCTable from './InspectorComponents/InspectorBOCTable';
 import InspectorNotesTable from './InspectorComponents/InspectorNotesTable';
 import StampCharacteristicModal from './InspectorComponents/StampCharacteristicModal';
@@ -107,6 +108,7 @@ const QMSInspector = () => {
   const [stampSaving, setStampSaving] = useState(false);
 
   const viewerWrapRef = useRef(null);
+  const drawingRef = useRef(null);
   const exportBalloonedRef = useRef(null);
   const quantityClearSkipRef = useRef(true);
   const [viewerWidth, setViewerWidth] = useState(880);
@@ -629,6 +631,18 @@ const QMSInspector = () => {
 
   const balloonOverlays = useMemo(() => buildBalloonOverlaysFromBocRows(bocDisplay), [bocDisplay]);
 
+  const interactiveBalloons = useMemo(() => {
+    return balloonOverlays.map((b) => ({
+      id: String(b.id),
+      label: b.label,
+      x: b.pdfRect.x,
+      y: b.pdfRect.y,
+      width: b.pdfRect.width,
+      height: b.pdfRect.height,
+      page: b.page,
+    }));
+  }, [balloonOverlays]);
+
   const buildMasterBocItems = useCallback(
     (dimensions) =>
       dimensions.map((d) => {
@@ -1033,11 +1047,11 @@ const QMSInspector = () => {
   );
 
   const handleZoomIn = useCallback(() => {
-    setPdfZoom((z) => Math.min(ZOOM_MAX, Math.round((z + ZOOM_STEP) * 100) / 100));
+    drawingRef.current?.zoomIn();
   }, []);
 
   const handleZoomOut = useCallback(() => {
-    setPdfZoom((z) => Math.max(ZOOM_MIN, Math.round((z - ZOOM_STEP) * 100) / 100));
+    drawingRef.current?.zoomOut();
   }, []);
 
   const handleRotate = useCallback(() => {
@@ -1045,7 +1059,7 @@ const QMSInspector = () => {
   }, []);
 
   const handleResetView = useCallback(() => {
-    setPdfZoom(1);
+    drawingRef.current?.resetView();
     setPdfRotation(0);
   }, []);
 
@@ -1080,6 +1094,45 @@ const QMSInspector = () => {
       },
     });
   }, [bocRowsRaw, fetchMasterBoc, message, bocEditLocked]);
+
+  const handleRegionSelect = useCallback(
+    async (box) => {
+      if (activeTool === 'select') {
+        if (!documentId || !partId) {
+          message.warning('Missing document or part for detection.');
+          return;
+        }
+        setSaving(true);
+        try {
+          const res = await axios.post(`${QUALITY_API_BASE_URL}/pdf-annotation/process-dimensions`, {
+            part_id: Number(partId),
+            pdf_id: String(documentId),
+            bounding_box: box,
+            scale_factor: 1.0,
+            pdf_content_type: 'normal',
+          });
+          await fetchMasterBoc();
+          const n = res.data?.count ?? 0;
+          if (n > 0) {
+            message.success(`Detected ${n} characteristic(s)`);
+          } else {
+            message.info('No dimensions found — try selecting tighter around the dimension text.');
+          }
+        } catch (err) {
+          console.error(err);
+          const detail = err.response?.data?.detail;
+          message.error(typeof detail === 'string' ? detail : err.message || 'Detection failed');
+        } finally {
+          setSaving(false);
+        }
+      } else if (activeTool === 'stamp') {
+        handleStampRegion(box);
+      } else if (activeTool === 'notes') {
+        handleNoteRegion(box);
+      }
+    },
+    [activeTool, documentId, partId, fetchMasterBoc, handleStampRegion, handleNoteRegion, message],
+  );
 
   const canDetect = Boolean(documentId && partId);
 
@@ -1194,27 +1247,20 @@ const QMSInspector = () => {
           )}
           {fileUrl && (
             <div ref={viewerWrapRef} style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-              <PdfInspectionPlanCanvas
-                fileUrl={fileUrl}
-                isPdf={fileIsPdf}
-                documentId={canDetect ? Number(documentId) : null}
-                partId={partId ? Number(partId) : null}
+              <InteractiveDrawing
+                ref={drawingRef}
+                pdfId={canDetect ? Number(documentId) : null}
+                directImageSrc={!fileIsPdf ? fileUrl : null}
+                pageNumber={1} // TODO: Add page state if needed
+                balloons={interactiveBalloons}
+                activeBalloonId={lastClickedRowId ? String(lastClickedRowId) : null}
+                selectedBalloonIds={selectedRowIds.map(String)}
+                onBalloonClick={(b) => setLastClickedRowId(Number(b.id))}
+                onRegionSelect={handleRegionSelect}
                 activeTool={activeTool}
-                onDetectionComplete={onDetectionComplete}
-                onStampRegion={handleStampRegion}
-                onNoteRegion={handleNoteRegion}
-                onExportBalloonedReady={(fn) => {
-                  exportBalloonedRef.current = fn;
-                }}
-                loadingExternal={saving}
-                zoom={pdfZoom}
-                onZoomChange={setPdfZoom}
-                pdfRotation={pdfRotation}
-                maxDisplayWidth={viewerWidth}
-                maxDisplayHeight={viewerHeight}
-                balloonOverlays={balloonOverlays}
-                noteOverlays={noteOverlays}
-                selectedBalloonId={lastClickedRowId}
+                isLoading={saving}
+                balloonColor="blue"
+                sidebarOffset={50}
               />
             </div>
           )}

@@ -61,3 +61,16 @@ class UpdateBoundingBoxRequest(BaseModel):
     text_data: Optional[List[Dict]] = None
     gdt_data: Optional[List[Dict]] = None
     dimension_data: Optional[List[Dict]] = None
+
+
+class RenderPageRequest(BaseModel):
+    """Request to render a specific PDF page as an image."""
+    pdf_id: str
+    page: int
+    x: float = 0
+    y: float = 0
+    width: float = 0
+    height: float = 0
+    scale: float = 1.5
+    is_scanned: bool = False
+    return_base64: bool = True

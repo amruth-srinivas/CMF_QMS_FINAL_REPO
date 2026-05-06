@@ -13,6 +13,7 @@ import re
 import fitz  # PyMuPDF
 import numpy as np
 import cv2
+import base64
 
 from DB.database import get_db
 from DB.models.oms import Document as DocumentModel, Part, OperationDocument as OperationDocumentModel
@@ -22,6 +23,7 @@ from DB.schemas.pdf_annotation import (
     ExtractTextRequest,
     ExtractZonesBulkRequest,
     ProcessDimensionsRequest,
+    RenderPageRequest,
 )
 
 try:
@@ -1216,3 +1218,73 @@ async def extract_zones_bulk(request: ExtractZonesBulkRequest, db: Session = Dep
 
 
 # --- Legacy balloon endpoints removed (CMF uses quality.master_boc). ---
+
+
+@router.get("/info/{document_id}")
+async def get_pdf_info(document_id: int, db: Session = Depends(get_db)):
+    """Return page count and dimensions (width/height) for each page in the PDF."""
+    cleanup_pdf = None
+    try:
+        file_path, cleanup_pdf = get_pdf_path_from_document(document_id, db)
+        doc = fitz.open(str(file_path))
+        pages = []
+        for i in range(len(doc)):
+            p = doc[i]
+            pages.append({
+                "page_number": i,
+                "width": p.rect.width,
+                "height": p.rect.height,
+                "rotation": p.rotation
+            })
+        doc.close()
+        return {"success": True, "pages": pages, "count": len(pages)}
+    except Exception as e:
+        logger.error(f"Error getting PDF info: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if cleanup_pdf:
+            cleanup_pdf()
+
+
+@router.post("/render-page")
+async def render_page(request: RenderPageRequest, db: Session = Depends(get_db)):
+    """Render a specific PDF page region as a base64 image."""
+    cleanup_pdf = None
+    try:
+        document_id = int(request.pdf_id)
+        file_path, cleanup_pdf = get_pdf_path_from_document(document_id, db)
+        doc = fitz.open(str(file_path))
+        
+        page_idx = request.page - 1
+        if page_idx < 0 or page_idx >= len(doc):
+            raise HTTPException(status_code=400, detail=f"Invalid page number {request.page}")
+            
+        page = doc[page_idx]
+        
+        # If no region specified, render the whole page
+        if request.width <= 0 or request.height <= 0:
+            mat = fitz.Matrix(request.scale, request.scale)
+            pix = page.get_pixmap(matrix=mat, alpha=False)
+        else:
+            # Render a specific region
+            rect = fitz.Rect(request.x, request.y, request.x + request.width, request.y + request.height)
+            mat = fitz.Matrix(request.scale, request.scale)
+            pix = page.get_pixmap(matrix=mat, clip=rect, alpha=False)
+            
+        img_bytes = pix.tobytes("png")
+        doc.close()
+        
+        if request.return_base64:
+            b64 = base64.b64encode(img_bytes).decode("utf-8")
+            return {"success": True, "image_base64": f"data:image/png;base64,{b64}"}
+        else:
+            # We could return a direct Response(content=img_bytes, media_type="image/png")
+            # but the frontend InteractiveDrawing expects JSON with image_base64.
+            pass
+            
+    except Exception as e:
+        logger.error(f"Error rendering PDF page: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if cleanup_pdf:
+            cleanup_pdf()

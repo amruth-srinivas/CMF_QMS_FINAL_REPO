@@ -7,6 +7,8 @@ import { Card, Tag, Typography, Empty, Space } from 'antd';
 import axios from 'axios';
 import { QUALITY_API_BASE_URL } from '../Config/qualityconfig';
 import ExcelJS from 'exceljs';
+import InteractiveDrawing from './InspectorComponents/InteractiveDrawing';
+import { parseMasterBocBboxToPdfRect } from './InspectorComponents/bocMappers';
 import cmtiLogo from '../assets/cmti-logo.png';
 
 const { Sider, Content } = Layout;
@@ -79,6 +81,7 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
   const [planViewCanEditBoc, setPlanViewCanEditBoc] = useState(false);
   const [planViewOperationRecord, setPlanViewOperationRecord] = useState(null);
   const [planBalloonDocumentId, setPlanBalloonDocumentId] = useState(null);
+  const [activeBalloonId, setActiveBalloonId] = useState(null);
   const [measureModalOpen, setMeasureModalOpen] = useState(false);
   const [measureModalLoading, setMeasureModalLoading] = useState(false);
   const [measureRows, setMeasureRows] = useState([]);
@@ -1106,6 +1109,36 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
     return { total, within, out, noTol, passRate };
   }, [ftpApproveDecoratedRows]);
 
+  const interactiveBalloons = useMemo(() => {
+    return (ftpApproveRows || []).map((r, idx) => {
+      const rect = parseMasterBocBboxToPdfRect(r.bbox);
+      return {
+        id: String(r.id),
+        label: String(idx + 1),
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+        page: rect.page || 1,
+      };
+    });
+  }, [ftpApproveRows]);
+
+  const planInteractiveBalloons = useMemo(() => {
+    return (planTableRows || []).map((r, idx) => {
+      const rect = parseMasterBocBboxToPdfRect(r.bbox);
+      return {
+        id: String(r.id),
+        label: String(idx + 1),
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+        page: rect.page || 1,
+      };
+    });
+  }, [planTableRows]);
+
   const openFtpApproveModal = async (record) => {
     const oid = effectiveOrderId && String(effectiveOrderId) !== 'null' ? Number(effectiveOrderId) : null;
     if (!oid || !selectedItem?.part_number || !selectedItem?.id) {
@@ -1175,6 +1208,9 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
         setPlanDrawingIsPdf(/\.pdf$/i.test(name));
         setPlanDrawingFileName(name || null);
         setPlanDrawingUrl(`${QUALITY_API_BASE_URL}/operation-documents/${baloonDoc.id}/preview`);
+        setPlanBalloonDocumentId(baloonDoc.id);
+      } else {
+        setPlanBalloonDocumentId(null);
       }
     } catch (err) {
       console.error(err);
@@ -1935,6 +1971,10 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                         pagination={{ pageSize: 14, showSizeChanger: false }}
                         scroll={{ x: 'max-content', y: 520 }}
                         rowClassName={(_, idx) => (idx % 2 === 0 ? 'plan-row-even' : 'plan-row-odd')}
+                        onRow={(record) => ({
+                          onClick: () => setActiveBalloonId(String(record.id)),
+                          style: { cursor: 'pointer' }
+                        })}
                         columns={[
                           { title: 'S.No', key: 'sno', width: 82, render: (_, __, idx) => <Text style={{ fontFamily: '"JetBrains Mono", "Consolas", "Courier New", monospace', fontSize: 13 }}>{idx + 1}</Text> },
                           { title: 'Zone', dataIndex: 'zone', key: 'zone', width: 90, render: (z) => <Tag color="geekblue" style={{ margin: 0, borderRadius: 10, fontFamily: '"JetBrains Mono", "Consolas", "Courier New", monospace' }}>{z || '—'}</Tag> },
@@ -1966,39 +2006,19 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                         Download Drawing
                       </Button>
                     </div>
-                    <div style={{ flex: 1, minHeight: 0, padding: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f8fafc' }}>
+                    <div style={{ flex: 1, minHeight: 0, padding: 10, display: 'flex', flexDirection: 'column', background: '#f8fafc' }}>
                       {planViewLoading ? (
                         <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Spin /></div>
                       ) : planDrawingUrl ? (
-                        planDrawingIsPdf ? (
-                          <iframe
-                            title="Balloon document"
-                            src={pdfEmbedSrcForReview(planDrawingUrl)}
-                            style={{
-                              width: '100%',
-                              minHeight: 480,
-                              height: 'min(72vh, 900px)',
-                              border: '1px solid #e5e7eb',
-                              borderRadius: 10,
-                              background: '#fff',
-                              boxShadow: '0 2px 10px rgba(15,23,42,0.08)',
-                            }}
-                          />
-                        ) : (
-                          <img
-                            src={planDrawingUrl}
-                            alt="Ballooned drawing"
-                            style={{
-                              maxWidth: '100%',
-                              maxHeight: '100%',
-                              objectFit: 'contain',
-                              border: '1px solid #e5e7eb',
-                              borderRadius: 10,
-                              background: '#fff',
-                              boxShadow: '0 2px 10px rgba(15,23,42,0.08)',
-                            }}
-                          />
-                        )
+                        <InteractiveDrawing
+                          pdfId={planBalloonDocumentId}
+                          directImageSrc={!planDrawingIsPdf ? planDrawingUrl : null}
+                          pageNumber={1}
+                          balloons={planInteractiveBalloons}
+                          activeBalloonId={activeBalloonId}
+                          onBalloonClick={(b) => setActiveBalloonId(b.id)}
+                          balloonColor="blue"
+                        />
                       ) : (
                         <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                           <Empty description="No balloon document found for this operation" />
@@ -2283,6 +2303,10 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                                 rowKey="id"
                                 pagination={false}
                                 scroll={{ x: 'max-content', y: 460 }}
+                                onRow={(record) => ({
+                                  onClick: () => setActiveBalloonId(String(record.id)),
+                                  style: { cursor: 'pointer' }
+                                })}
                                 columns={[
                                   { title: 'S.No', key: 'sno', width: 64, render: (_, __, idx) => idx + 1 },
                                   { title: 'Zone', dataIndex: 'zone', key: 'zone', width: 82, render: (z) => <Tag color="geekblue" style={{ margin: 0, borderRadius: 10 }}>{z || '—'}</Tag> },
@@ -2361,35 +2385,17 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                       {ftpApproveLoading ? (
                         <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Spin /></div>
                       ) : planDrawingUrl ? (
-                        planDrawingIsPdf ? (
-                          <iframe
-                            title="Balloon document"
-                            src={pdfEmbedSrcForReview(planDrawingUrl)}
-                            style={{
-                              width: '100%',
-                              minHeight: 480,
-                              height: 'min(72vh, 900px)',
-                              border: '1px solid #e5e7eb',
-                              borderRadius: 10,
-                              background: '#fff',
-                              boxShadow: '0 2px 10px rgba(15,23,42,0.08)',
-                            }}
+                        <div style={{ width: '100%', height: 'min(72vh, 900px)', border: '1px solid #e5e7eb', borderRadius: 10, background: '#fff', boxShadow: '0 2px 10px rgba(15,23,42,0.08)', overflow: 'hidden' }}>
+                          <InteractiveDrawing
+                            pdfId={planBalloonDocumentId}
+                            directImageSrc={!planDrawingIsPdf ? planDrawingUrl : null}
+                            pageNumber={1}
+                            balloons={interactiveBalloons}
+                            activeBalloonId={activeBalloonId}
+                            onBalloonClick={(b) => setActiveBalloonId(b.id)}
+                            balloonColor="blue"
                           />
-                        ) : (
-                          <img
-                            src={planDrawingUrl}
-                            alt="Ballooned drawing"
-                            style={{
-                              maxWidth: '100%',
-                              maxHeight: '100%',
-                              objectFit: 'contain',
-                              border: '1px solid #e5e7eb',
-                              borderRadius: 10,
-                              background: '#fff',
-                              boxShadow: '0 2px 10px rgba(15,23,42,0.08)',
-                            }}
-                          />
-                        )
+                        </div>
                       ) : (
                         <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                           <Empty description="No balloon document found for this operation" />
