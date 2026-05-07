@@ -148,7 +148,10 @@ def get_inspection_report(
         items = stage_by_master_id.get(m.id, [])
         if items:
             st = items[0]
-            m1, m2, m3 = _nz(st.measured_1), _nz(st.measured_2), _nz(st.measured_3)
+            meas = st.measurements or []
+            m1 = _nz(meas[0]) if len(meas) > 0 else ""
+            m2 = _nz(meas[1]) if len(meas) > 1 else ""
+            m3 = _nz(meas[2]) if len(meas) > 2 else ""
             mean_s = _nz(st.measured_mean)
             if m1 or m2 or m3:
                 g_val, i_val, k_val = m1, m2, m3

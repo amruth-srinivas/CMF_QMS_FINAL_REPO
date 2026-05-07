@@ -4,8 +4,7 @@ import { FilterOutlined, UnorderedListOutlined, EditOutlined, LeftOutlined, Righ
 
 const { Text } = Typography;
 
-const M_FIELDS = ['m1', 'm2', 'm3'];
-const API_M = { m1: 'measured_1', m2: 'measured_2', m3: 'measured_3' };
+// Removed hardcoded M_FIELDS and API_M constants for dynamic measurements
 
 function dimTypeColor(type) {
   const s = (type || '').toString();
@@ -29,31 +28,25 @@ function parseMeasurementNum(s) {
 }
 
 /** Format mean for API / display (trim trailing zeros). */
-function formatMean(a, b, c) {
-  const mean = (a + b + c) / 3;
+function formatMean(vals) {
+  if (!Array.isArray(vals) || !vals.length) return null;
+  const numVals = vals.map(v => parseMeasurementNum(v)).filter(v => v != null);
+  if (!numVals.length) return null;
+  const sum = numVals.reduce((acc, v) => acc + v, 0);
+  const mean = sum / numVals.length;
   if (!Number.isFinite(mean)) return null;
-  const s = mean.toFixed(6).replace(/\.?0+$/, '');
-  return s === '-0' ? '0' : s;
+  // User requested 2 decimal values
+  const s = mean.toFixed(2);
+  return s;
 }
 
-function computeMeanFromStrings(m1, m2, m3) {
-  const a = parseMeasurementNum(m1);
-  const b = parseMeasurementNum(m2);
-  const c = parseMeasurementNum(m3);
-  const vals = [a, b, c].filter((v) => v != null);
-  if (!vals.length) return null;
-  const sum = vals.reduce((acc, v) => acc + v, 0);
-  const mean = sum / vals.length;
-  if (!Number.isFinite(mean)) return null;
-  const s = mean.toFixed(6).replace(/\.?0+$/, '');
-  return s === '-0' ? '0' : s;
+function computeMeanFromStrings(strings) {
+  return formatMean(strings);
 }
 
-function measurePassFail(record) {
-  if (!record.stageInspectionId) return null;
-  const raw = record.actualValue;
-  if (raw == null || String(raw).trim() === '') return null;
-  const actual = parseMeasurementNum(raw);
+function checkPassFail(value, record) {
+  if (value == null || String(value).trim() === '') return null;
+  const actual = parseMeasurementNum(value);
   const nominal = parseMeasurementNum(record.nominal);
   if (actual == null || nominal == null) return null;
   // Tolerance magnitude is what matters for bounds; LTOL can be stored/displayed with a minus sign.
@@ -70,21 +63,28 @@ const cellCenter = { textAlign: 'center' };
 /** MEASURE: keep width compact to reduce horizontal scrolling */
 const MEASURE_SCROLL_X = 820;
 
-function focusMeasureInput(rowId, field) {
-  const el = document.querySelector(
-    `input[data-measure-row="${rowId}"][data-measure-field="${field}"]`,
-  );
-  el?.focus();
-  el?.select?.();
+function focusMeasureInput(rowId, index) {
+  setTimeout(() => {
+    const el = document.querySelector(`.measure-cell-${rowId}-${index} input`);
+    el?.focus();
+    el?.select?.();
+  }, 10);
 }
 
-function readMeasureInputs(rowId) {
-  const out = { m1: '', m2: '', m3: '' };
-  for (const f of M_FIELDS) {
-    const el = document.querySelector(`input[data-measure-row="${rowId}"][data-measure-field="${f}"]`);
-    out[f] = el?.value ?? '';
+function readMeasureInputs(stageId) {
+  if (!stageId) return [];
+  const inputs = [];
+  for (let i = 0; i < 50; i++) {
+    const el = document.querySelector(`.measure-cell-stage-${stageId}-${i} input`);
+    if (el) {
+      const val = el.value ?? '';
+      inputs.push(val);
+    } else {
+      // Stop at first missing column
+      break;
+    }
   }
-  return out;
+  return inputs;
 }
 
 const InspectorBOCTable = ({
@@ -113,10 +113,54 @@ const InspectorBOCTable = ({
   const suppressRowClickRef = useRef(false);
   const dragStateRef = useRef({ down: false, moved: false, startX: 0, startY: 0, scrollL: 0, scrollT: 0 });
   const [editingInstrumentRowId, setEditingInstrumentRowId] = React.useState(null);
+  const [localColCount, setLocalColCount] = React.useState(null);
 
   useEffect(() => {
     rangeAnchorIndexRef.current = null;
   }, [dataSource]);
+
+  const measurementCount = useMemo(() => {
+    let dataMax = 0;
+    dataSource.forEach(r => {
+      if (r.measurements && r.measurements.length > dataMax) dataMax = r.measurements.length;
+    });
+    const base = Math.max(3, dataMax);
+    if (localColCount === null || localColCount < base) return base;
+    return localColCount;
+  }, [dataSource, localColCount]);
+
+  useEffect(() => {
+    // Reset local count when data changes significantly or quantity changes
+    setLocalColCount(null);
+  }, [quantityNo]);
+
+  const handleAddColumn = () => {
+    setLocalColCount(measurementCount + 1);
+  };
+
+  const handleRemoveColumn = () => {
+    if (measurementCount > 1) {
+      const newCount = measurementCount - 1;
+      setLocalColCount(newCount);
+      
+      // If we remove a column that might have data, we should ideally notify the parent to truncate.
+      // For now, we'll let the user know it's a UI removal, but we'll also trigger a patch 
+      // if they want to "save" the removal.
+      // But the requirement says "the last column added should be removed and all these changes should be saved".
+      // This implies we should actually update the backend.
+      
+      dataSource.forEach(record => {
+        if (record.stageInspectionId && record.measurements && record.measurements.length > newCount) {
+          const newList = record.measurements.slice(0, newCount);
+          const meanStr = computeMeanFromStrings(newList);
+          onMeasurePatch?.(record.stageInspectionId, {
+            measurements: newList,
+            measured_mean: meanStr
+          });
+        }
+      });
+    }
+  };
 
   /** MEASURE: click-drag to pan scroll area (not when interacting with inputs). */
   useEffect(() => {
@@ -234,8 +278,8 @@ const InspectorBOCTable = ({
   const maybePatchMean = useCallback(
     async (record) => {
       if (!record.stageInspectionId || !onMeasurePatch) return;
-      const { m1, m2, m3 } = readMeasureInputs(record.id);
-      const meanStr = computeMeanFromStrings(m1, m2, m3);
+      const mList = readMeasureInputs(record.id);
+      const meanStr = computeMeanFromStrings(mList);
       if (meanStr == null) return;
       await onMeasurePatch(record.stageInspectionId, { measured_mean: meanStr });
     },
@@ -243,53 +287,52 @@ const InspectorBOCTable = ({
   );
 
   const handleMeasureKeyDown = useCallback(
-    (e, record, rowIndex, field) => {
-      if (!record.stageInspectionId || record.measureLocked) return;
-      const rowId = record.id;
-      const idx = M_FIELDS.indexOf(field);
-      if (idx < 0) return;
+    (e, record, rowIndex, index, maxIndex) => {
+      const stageId = record.stageInspectionId;
+      if (!stageId) return;
+
+      const saveCurrentRow = async () => {
+        const mList = readMeasureInputs(stageId);
+        const meanStr = computeMeanFromStrings(mList);
+        console.log(`[InspectorBOCTable] Calculated mean for stage row ${stageId}:`, meanStr, 'from inputs:', mList);
+        const numVals = mList.map((v) => parseMeasurementNum(v));
+        const allFilled = numVals.length >= 3 && numVals.every((v) => v != null);
+        const payload = {
+          measurements: mList,
+          measured_mean: meanStr || '',
+          is_done: allFilled,
+        };
+        await onMeasurePatch?.(stageId, payload);
+      };
 
       if (e.key === 'ArrowRight') {
         e.preventDefault();
-        if (idx < 2) focusMeasureInput(rowId, M_FIELDS[idx + 1]);
+        void saveCurrentRow();
+        if (index < maxIndex) focusMeasureInput(rowId, index + 1);
       } else if (e.key === 'ArrowLeft') {
         e.preventDefault();
-        if (idx > 0) focusMeasureInput(rowId, M_FIELDS[idx - 1]);
+        void saveCurrentRow();
+        if (index > 0) focusMeasureInput(rowId, index - 1);
       } else if (e.key === 'Enter') {
         e.preventDefault();
-        if (idx < 2) {
-          focusMeasureInput(rowId, M_FIELDS[idx + 1]);
+        void saveCurrentRow();
+        if (index < maxIndex) {
+          focusMeasureInput(rowId, index + 1);
           return;
         }
-        const { m1, m2, m3 } = readMeasureInputs(rowId);
-        const patch = async () => {
-          const meanStr = computeMeanFromStrings(m1, m2, m3);
-          const a = parseMeasurementNum(m1);
-          const b = parseMeasurementNum(m2);
-          const c = parseMeasurementNum(m3);
-          const payload = {
-            measured_1: m1,
-            measured_2: m2,
-            measured_3: m3,
-          };
-          if (meanStr != null) payload.measured_mean = meanStr;
-          if (a != null && b != null && c != null) payload.is_done = true;
-          await onMeasurePatch?.(record.stageInspectionId, payload);
-        };
-        void patch().then(() => {
-          const next = dataSource[rowIndex + 1];
-          if (next?.stageInspectionId) {
-            requestAnimationFrame(() => focusMeasureInput(next.id, 'm1'));
-          }
-        });
+        // If at end of row, move to next row first column
+        const next = dataSource[rowIndex + 1];
+        if (next?.stageInspectionId) {
+          requestAnimationFrame(() => focusMeasureInput(next.id, 0));
+        }
       }
     },
     [dataSource, onMeasurePatch],
   );
 
   const renderMInput = useCallback(
-    (field, width) => (v, record, rowIndexArg) => {
-      const showInput = measureMode && record.stageInspectionId;
+    (index, width, maxIndex) => (v, record, rowIndexArg) => {
+      const showInput = measureMode;
       const rowIndex =
         typeof rowIndexArg === 'number' ? rowIndexArg : dataSource.findIndex((r) => r.id === record.id);
       if (!showInput) {
@@ -300,37 +343,35 @@ const InspectorBOCTable = ({
           </div>
         );
       }
-      const apiKey = API_M[field];
       const locked = Boolean(record.measureLocked);
       return (
-        <div style={cellCenter}>
+        <div
+          style={cellCenter}
+          className={`measure-cell-stage-${record.stageInspectionId}-${index}`}
+        >
           <Input
-            key={`m-${record.id}-${record.stageInspectionId}-${field}`}
-            data-measure-row={record.id}
-            data-measure-field={field}
+            key={`m-${record.id}-${record.stageInspectionId}-${index}`}
             size="small"
             defaultValue={v ?? ''}
             disabled={locked}
             onBlur={(e) => {
-              if (locked) return;
-              const { m1, m2, m3 } = readMeasureInputs(record.id);
-              const meanStr = computeMeanFromStrings(m1, m2, m3);
-              const a = parseMeasurementNum(m1);
-              const b = parseMeasurementNum(m2);
-              const c = parseMeasurementNum(m3);
+              const stageId = record.stageInspectionId;
+              if (!stageId || locked) return;
+
+              const mList = readMeasureInputs(stageId);
+              const meanStr = computeMeanFromStrings(mList);
+              console.log(`[InspectorBOCTable] onBlur mean for stage row ${stageId}:`, meanStr, 'from inputs:', mList);
+              const numVals = mList.map((v) => parseMeasurementNum(v));
+              const allFilled = numVals.length >= 3 && numVals.every((v) => v != null);
+              
               const payload = {
-                measured_1: m1,
-                measured_2: m2,
-                measured_3: m3,
+                measurements: mList,
+                measured_mean: meanStr || '',
+                is_done: allFilled
               };
-              if (meanStr != null) payload.measured_mean = meanStr;
-              payload.is_done = a != null && b != null && c != null;
-              onMeasurePatch?.(record.stageInspectionId, payload);
-              if (payload.is_done) {
-                void maybePatchMean(record);
-              }
+              onMeasurePatch?.(stageId, payload);
             }}
-            onKeyDown={(e) => handleMeasureKeyDown(e, record, rowIndex, field)}
+            onKeyDown={(e) => handleMeasureKeyDown(e, record, rowIndex, index, maxIndex)}
             style={{ width, fontSize: 11, paddingInline: 6 }}
           />
         </div>
@@ -341,24 +382,64 @@ const InspectorBOCTable = ({
 
   const renderActualDisplay = useCallback(
     (v, record) => {
-      if (!measureMode || !record.stageInspectionId) {
-        const display = v != null && String(v).trim() !== '' ? String(v) : '—';
+      const display = v != null && String(v).trim() !== '' ? String(v) : '—';
+      const status = checkPassFail(v, record);
+      
+      if (status === 'pass') {
         return (
           <div style={cellCenter}>
-            <Text style={{ fontSize: '11px' }}>{display}</Text>
+            <Tag 
+              color="success" 
+              bordered={false}
+              style={{ 
+                margin: 0, 
+                borderRadius: '4px', 
+                fontWeight: 800, 
+                fontSize: '10px',
+                minWidth: '42px',
+                backgroundColor: '#f0fdf4',
+                color: '#15803d',
+                border: '1px solid #bcf0da'
+              }}
+            >
+              {display}
+            </Tag>
           </div>
         );
       }
-      const display = v != null && String(v).trim() !== '' ? String(v) : '—';
+
+      if (status === 'fail') {
+        return (
+          <div style={cellCenter}>
+            <Tag 
+              color="error" 
+              bordered={false}
+              style={{ 
+                margin: 0, 
+                borderRadius: '4px', 
+                fontWeight: 800, 
+                fontSize: '10px',
+                minWidth: '42px',
+                backgroundColor: '#fef2f2',
+                color: '#dc2626',
+                border: '1px solid #fecaca'
+              }}
+            >
+              {display}
+            </Tag>
+          </div>
+        );
+      }
+
       return (
         <div style={cellCenter}>
-          <Text strong style={{ fontSize: '11px', color: '#262626' }}>
+          <Text style={{ fontSize: '11px', color: '#8c8c8c' }}>
             {display}
           </Text>
         </div>
       );
     },
-    [measureMode],
+    [],
   );
 
   const columns = useMemo(() => {
@@ -455,30 +536,27 @@ const InspectorBOCTable = ({
       align: 'center',
       render: renderActualDisplay,
     };
-    const m1Col = {
-      title: 'M1',
-      dataIndex: 'm1',
-      key: 'm1',
-      width: 58,
+
+    const meanValueCol = {
+      title: 'MEAN VALUE',
+      dataIndex: 'meanValue',
+      key: 'meanValue',
+      width: 90,
       align: 'center',
-      render: (v, record, i) => renderMInput('m1', 52)(v, record, i),
+      render: renderActualDisplay,
     };
-    const m2Col = {
-      title: 'M2',
-      dataIndex: 'm2',
-      key: 'm2',
-      width: 58,
-      align: 'center',
-      render: (v, record, i) => renderMInput('m2', 52)(v, record, i),
-    };
-    const m3Col = {
-      title: 'M3',
-      dataIndex: 'm3',
-      key: 'm3',
-      width: 58,
-      align: 'center',
-      render: (v, record, i) => renderMInput('m3', 52)(v, record, i),
-    };
+
+    const mCols = [];
+    for (let i = 0; i < measurementCount; i++) {
+      mCols.push({
+        title: `M${i + 1}`,
+        dataIndex: ['measurements', i],
+        key: `m${i}`,
+        width: 58,
+        align: 'center',
+        render: (v, record, idx) => renderMInput(i, 52, measurementCount - 1)(v, record, idx),
+      });
+    }
 
     const instrumentCol = {
       title: 'INSTRUMENT',
@@ -543,21 +621,28 @@ const InspectorBOCTable = ({
 
     if (measureMode) {
       return [
-        baseCols[0],
-        baseCols[1],
-        actualCol,
-        baseCols[2],
-        baseCols[3],
-        baseCols[4],
-        baseCols[5],
-        m1Col,
-        m2Col,
-        m3Col,
+        baseCols[0], // ID
+        baseCols[5], // ZONE
+        baseCols[1], // NOMINAL
+        baseCols[2], // UTOL
+        baseCols[3], // LTOL
+        baseCols[4], // DIM TYPE
+        actualCol,   // ACTUAL
+        ...mCols,
         instrumentCol,
       ];
     }
-    return [...baseCols, instrumentCol];
-  }, [measureMode, renderMInput, renderActualDisplay, editingInstrumentRowId, setEditingInstrumentRowId, onMeasurePatch]);
+    // Plan mode: [ID, ZONE, NOMINAL, UTOL, LTOL, DIM TYPE, INSTRUMENT]
+    return [
+      baseCols[0],
+      baseCols[5],
+      baseCols[1],
+      baseCols[2],
+      baseCols[3],
+      baseCols[4],
+      instrumentCol,
+    ];
+  }, [measureMode, renderMInput, renderActualDisplay, editingInstrumentRowId, setEditingInstrumentRowId, onMeasurePatch, measurementCount]);
 
   const countTotal = totalCount ?? dataSource.length;
   const badge = filterActive ? `${dataSource.length} / ${countTotal}` : String(dataSource.length);
@@ -616,6 +701,28 @@ const InspectorBOCTable = ({
           <Tag color="blue" bordered={false} style={{ margin: 0, borderRadius: '4px', fontSize: '9px' }}>
             {badge}
           </Tag>
+          {measureMode && (
+            <Space size={4}>
+              <Button 
+                size="small" 
+                type="dashed" 
+                onClick={handleAddColumn}
+                style={{ fontSize: 10, height: 22, padding: '0 8px' }}
+              >
+                + Add Column
+              </Button>
+              <Button 
+                size="small" 
+                type="dashed" 
+                danger
+                onClick={handleRemoveColumn}
+                disabled={measurementCount <= 1}
+                style={{ fontSize: 10, height: 22, padding: '0 8px' }}
+              >
+                - Remove Column
+              </Button>
+            </Space>
+          )}
         </Space>
         <Space wrap>
           {measureMode && (
@@ -726,7 +833,7 @@ const InspectorBOCTable = ({
             tableLayout="fixed"
             scroll={tableScroll}
             onRow={(record, rowIndex) => {
-              const pf = measureMode ? measurePassFail(record) : null;
+              const pf = measureMode ? checkPassFail(record.actualValue, record) : null;
               const selected = selectedSet.has(record.id);
               let bg;
               if (pf === 'pass') bg = '#f6ffed';

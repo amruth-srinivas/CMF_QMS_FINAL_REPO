@@ -198,20 +198,16 @@ const InspectionPlanNotifications = ({ dateRange, onCount }) => {
   };
 
   const computeMeanFromMeasurements = (r) => {
-    const a = parseNum(r.measured_1);
-    const b = parseNum(r.measured_2);
-    const c = parseNum(r.measured_3);
-    const vals = [a, b, c].filter((v) => v != null);
+    if (!Array.isArray(r.measurements)) return null;
+    const vals = r.measurements.map(parseNum).filter((v) => v != null);
     if (!vals.length) return null;
     const m = vals.reduce((x, y) => x + y, 0) / vals.length;
     return Number.isFinite(m) ? m : null;
   };
 
   const rowHasMeasured123 = (r) => {
-    const a = parseNum(r.measured_1);
-    const b = parseNum(r.measured_2);
-    const c = parseNum(r.measured_3);
-    return a != null || b != null || c != null;
+    if (!Array.isArray(r.measurements)) return false;
+    return r.measurements.some(m => parseNum(m) !== null);
   };
 
   const fmt4 = (value) => {
@@ -273,10 +269,8 @@ const InspectionPlanNotifications = ({ dateRange, onCount }) => {
   const ftpApproveMeasurementsDone = useMemo(() => {
     if (!ftpApproveRows?.length) return false;
     return ftpApproveRows.every((r) => {
-      const a = parseNum(r.measured_1);
-      const b = parseNum(r.measured_2);
-      const c = parseNum(r.measured_3);
-      return a != null && b != null && c != null;
+      if (!Array.isArray(r.measurements) || r.measurements.length === 0) return false;
+      return r.measurements.every(m => parseNum(m) !== null);
     });
   }, [ftpApproveRows]);
 
@@ -699,7 +693,7 @@ const InspectionPlanNotifications = ({ dateRange, onCount }) => {
                     width: 180,
                     render: (_, r) => (
                       <Space size={4} style={{ display: 'flex', flexWrap: 'wrap' }}>
-                        {[r.measured_1, r.measured_2, r.measured_3].map((v, i) => {
+                        {(r.measurements || ['', '', '']).map((v, i) => {
                           const val = parseNum(v);
                           // A value is "comparable" if limits are resolved
                           const canCompare = r._lowerLimit != null && r._upperLimit != null;

@@ -315,7 +315,7 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                 qty: qtyNum,
                 specified: `${ch.dimension_type || 'Dim'}: ${rowNominal} (${fmtTol(rowUpper)}/${fmtTol(rowLower)})`,
                 zone: ch.zone || '',
-                measurements: [m?.measured_1 || '', m?.measured_2 || '', m?.measured_3 || ''],
+                measurements: m?.measurements || [],
                 instrument: m?.measured_instrument || ch.measured_instrument || 'default',
                 remarks: m?.remarks || ''
               });
@@ -340,7 +340,7 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
               sno: idx + 1,
               specified: `${ch.dimension_type || 'Dim'}: ${rowNominal} (${fmtTol(rowUpper)}/${fmtTol(rowLower)})`,
               zone: ch.zone || '',
-              measurements: [m?.measured_1 || '', m?.measured_2 || '', m?.measured_3 || ''],
+              measurements: m?.measurements || [],
               instrument: m?.measured_instrument || ch.measured_instrument || 'default',
               remarks: m?.remarks || ''
             };
@@ -1014,26 +1014,20 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
 
   /** At least one of #1–#3 has a numeric reading (empty strings do not count). */
   const rowHasMeasured123 = (r) => {
-    const a = parseNum(r.measured_1);
-    const b = parseNum(r.measured_2);
-    const c = parseNum(r.measured_3);
-    return a != null || b != null || c != null;
+    return (r.measurements || []).some(m => parseNum(m) != null);
   };
 
   /** Prefer mean from #1–#3 only; if all empty, no mean (avoids bogus 0 from stored measured_mean). */
   const computeMeanFromMeasurements = (r) => {
-    const a = parseNum(r.measured_1);
-    const b = parseNum(r.measured_2);
-    const c = parseNum(r.measured_3);
-    const vals = [a, b, c].filter((v) => v != null);
+    const vals = (r.measurements || []).map(m => parseNum(m)).filter(v => v != null);
     if (!vals.length) return null;
     const m = vals.reduce((x, y) => x + y, 0) / vals.length;
     return Number.isFinite(m) ? m : null;
   };
 
-  const fmt4 = (value) => {
+  const fmt2 = (value) => {
     const n = parseNum(value);
-    return n == null ? '—' : n.toFixed(4);
+    return n == null ? '—' : n.toFixed(2);
   };
 
   const measureDecoratedRows = useMemo(() => {
@@ -1103,10 +1097,8 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
   const ftpApproveMeasurementsDone = useMemo(() => {
     if (!ftpApproveRows?.length) return false;
     return ftpApproveRows.every((r) => {
-      const a = parseNum(r.measured_1);
-      const b = parseNum(r.measured_2);
-      const c = parseNum(r.measured_3);
-      return a != null && b != null && c != null;
+      const vals = (r.measurements || []).map(m => parseNum(m)).filter(v => v != null);
+      return vals.length >= 3;
     });
   }, [ftpApproveRows]);
 
@@ -1148,6 +1140,11 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
       };
     });
   }, [planTableRows]);
+
+  const fmtLimit = (val) => {
+    const n = parseNum(val);
+    return n == null ? '—' : n.toFixed(2);
+  };
 
   const openFtpApproveModal = async (record) => {
     const oid = effectiveOrderId && String(effectiveOrderId) !== 'null' ? Number(effectiveOrderId) : null;
@@ -2181,13 +2178,13 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                                   title: 'Upper Limit',
                                   key: 'upper_limit',
                                   width: 110,
-                                  render: (_, r) => <Text style={{ color: '#166534' }}>{fmt4(r._upperLimit)}</Text>,
+                                  render: (_, r) => <Text style={{ color: '#166534' }}>{fmtLimit(r._upperLimit)}</Text>,
                                 },
                                 {
                                   title: 'Lower Limit',
                                   key: 'lower_limit',
                                   width: 110,
-                                  render: (_, r) => <Text style={{ color: '#991b1b' }}>{fmt4(r._lowerLimit)}</Text>,
+                                  render: (_, r) => <Text style={{ color: '#991b1b' }}>{fmtLimit(r._lowerLimit)}</Text>,
                                 },
                               ],
                             },
@@ -2195,16 +2192,24 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                               title: 'Actual (measurements)',
                               key: 'actual_group',
                               children: [
-                                { title: '#1', dataIndex: 'measured_1', key: 'measured_1', width: 85 },
-                                { title: '#2', dataIndex: 'measured_2', key: 'measured_2', width: 85 },
-                                { title: '#3', dataIndex: 'measured_3', key: 'measured_3', width: 85 },
+                                {
+                                  title: 'Samples',
+                                  key: 'samples',
+                                  children: Array.from({ length: Math.max(3, Math.max(...measureRows.map(r => r.measurements?.length || 0))) }).map((_, i) => ({
+                                    title: `#${i + 1}`,
+                                    dataIndex: ['measurements', i],
+                                    key: `m${i}`,
+                                    width: 80,
+                                    render: (v) => <Text style={{ fontSize: 11 }}>{v || '—'}</Text>
+                                  }))
+                                },
                                 {
                                   title: 'Mean',
                                   key: 'mean_computed',
                                   width: 100,
                                   render: (_, r) => {
                                     const m = r._computedMean;
-                                    const display = m == null ? '—' : fmt4(m);
+                                    const display = m == null ? '—' : fmt2(m);
                                     if (r._status === 'within') return <Text strong style={{ color: '#15803d' }}>{display}</Text>;
                                     if (r._status === 'out') return <Text strong style={{ color: '#dc2626' }}>{display}</Text>;
                                     return <Text style={{ color: '#4b5563' }}>{display}</Text>;
@@ -2362,16 +2367,24 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                                     title: 'Actual (Qty 1)',
                                     key: 'actual_group_ftp',
                                     children: [
-                                      { title: '#1', dataIndex: 'measured_1', key: 'measured_1', width: 72 },
-                                      { title: '#2', dataIndex: 'measured_2', key: 'measured_2', width: 72 },
-                                      { title: '#3', dataIndex: 'measured_3', key: 'measured_3', width: 72 },
+                                {
+                                  title: 'Samples',
+                                  key: 'samples_ftp',
+                                  children: Array.from({ length: Math.max(3, Math.max(...ftpApproveRows.map(r => r.measurements?.length || 0))) }).map((_, i) => ({
+                                    title: `#${i + 1}`,
+                                    dataIndex: ['measurements', i],
+                                    key: `mftp${i}`,
+                                    width: 72,
+                                    render: (v) => <Text style={{ fontSize: 11 }}>{v || '—'}</Text>
+                                  }))
+                                },
                                       {
                                         title: 'Mean',
                                         key: 'mean_c',
                                         width: 96,
                                         render: (_, r) => {
                                           const m = r._computedMean;
-                                          const display = m == null ? '—' : fmt4(m);
+                                          const display = m == null ? '—' : fmt2(m);
                                           if (r._status === 'within') return <Text strong style={{ color: '#15803d' }}>{display}</Text>;
                                           if (r._status === 'out') return <Text strong style={{ color: '#dc2626' }}>{display}</Text>;
                                           return <Text style={{ color: '#4b5563' }}>{display}</Text>;
