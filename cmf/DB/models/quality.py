@@ -10,6 +10,7 @@ from sqlalchemy import (
     BigInteger,
     Text,
     text,
+    JSON,
 )
 from ..database import Base
 
@@ -53,10 +54,8 @@ class StageInspection(Base):
     lowertol = Column(Float, nullable=False)
     zone = Column(String, nullable=False)
     dimension_type = Column(String, nullable=False)
-    measured_1 = Column(String, nullable=False)
-    measured_2 = Column(String, nullable=False)
-    measured_3 = Column(String, nullable=False)
-    measured_mean = Column(String, nullable=False)
+    measurements = Column(JSON, nullable=False, server_default=text("'[]'"))
+    measured_mean = Column(String, nullable=True)
     measured_instrument = Column(String, nullable=False)
     used_inst = Column(String, nullable=False)
     op_no = Column(Integer, nullable=False)

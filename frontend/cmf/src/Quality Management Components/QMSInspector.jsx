@@ -415,47 +415,53 @@ const QMSInspector = () => {
     setLastClickedRowId(null);
   }, [quantityNo]);
 
-  useEffect(() => {
+  const fetchStageRows = useCallback(async () => {
     if (inspectorMode !== 'MEASURE') return;
     if (quantityNo > 1 && !ftpApproved) return;
     const pid = partId ? Number(partId) : null;
     const oid = Number(salesOrderId);
     if (!pid || !oid || !partNumber) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await axios.post(`${QUALITY_API_BASE_URL}/quality/stage-inspection/ensure`, null, {
-          params: {
-            part_id: pid,
-            part_number: partNumber,
-            sale_order_id: oid,
-            op_no: opNo,
-            quantity_no: quantityNo,
-            ipid,
-            user_id: 1,
-          },
-        });
-        if (!cancelled) setStageRows(res.data);
-      } catch (err) {
-        console.error(err);
-        const detail = err.response?.data?.detail;
-        if (!cancelled) {
-          message.error(typeof detail === 'string' ? detail : err.message || 'Failed to load measure data');
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [inspectorMode, partId, salesOrderId, opNo, partNumber, bocRowsRaw.length, quantityNo, message, ftpApproved, ipid]);
+
+    try {
+      const res = await axios.post(`${QUALITY_API_BASE_URL}/quality/stage-inspection/ensure`, null, {
+        params: {
+          part_id: pid,
+          part_number: partNumber,
+          sale_order_id: oid,
+          op_no: opNo,
+          quantity_no: quantityNo,
+          ipid,
+          user_id: 1,
+        },
+      });
+      setStageRows(res.data);
+    } catch (err) {
+      console.error(err);
+      const detail = err.response?.data?.detail;
+      message.error(typeof detail === 'string' ? detail : err.message || 'Failed to load measure data');
+    }
+  }, [inspectorMode, partId, salesOrderId, opNo, partNumber, quantityNo, message, ftpApproved, ipid]);
+
+  useEffect(() => {
+    void fetchStageRows();
+  }, [fetchStageRows, bocRowsRaw.length]);
 
   const handleMeasurePatch = useCallback(
     async (stageId, payload) => {
       if (!stageId) return;
+
+      console.log(`[QMSInspector] Patching stage row ${stageId} with payload:`, payload);
+
+      // Update local state immediately for instant UI feedback
+      setStageRows((prev) => {
+        const next = prev.map((r) => (r.id === stageId ? { ...r, ...payload } : r));
+        console.log(`[QMSInspector] State updated for stage row ${stageId}. Mean is now:`, payload.measured_mean);
+        return next;
+      });
+
       try {
         await axios.patch(`${QUALITY_API_BASE_URL}/quality/stage-inspection/${stageId}`, payload);
-        setStageRows((prev) => prev.map((r) => (r.id === stageId ? { ...r, ...payload } : r)));
-        await refreshMeasurementSummary();
+        refreshMeasurementSummary();
       } catch (err) {
         console.error(err);
         const detail = err.response?.data?.detail;
@@ -489,19 +495,29 @@ const QMSInspector = () => {
 
   const bocTableData = useMemo(() => {
     return bocDisplay.map((r) => {
-      const st = stageByMasterId.get(r.id);
+      let st = stageByMasterId.get(r.id);
+      if (!st) {
+        // Fallback: match by values if ID-based mapping fails
+        const wantQ = Number(quantityNo);
+        st = stageRows.find(
+          (s) =>
+            Number(s.quantity_no || 1) === wantQ &&
+            String(s.nominal_value) === String(r.nominal) &&
+            String(s.zone) === String(r.zone) &&
+            String(s.dimension_type) === String(r.dimType),
+        );
+      }
       return {
         ...r,
-        m1: st?.measured_1 ?? '',
-        m2: st?.measured_2 ?? '',
-        m3: st?.measured_3 ?? '',
+        measurements: st?.measurements || [],
         actualValue: st?.measured_mean ?? '',
+        meanValue: st?.measured_mean ?? '',
         instrument: st?.measured_instrument || r.instrument,
         stageInspectionId: st?.id ?? null,
         measureLocked: Boolean(st?.is_done) || (quantityNo === 1 && ftpApproved),
       };
     });
-  }, [bocDisplay, stageByMasterId, quantityNo, ftpApproved]);
+  }, [bocDisplay, stageByMasterId, stageRows, quantityNo, ftpApproved]);
 
   const firstQtyAllDone = useMemo(() => {
     if (quantityNo !== 1 || !bocTableData.length) return false;

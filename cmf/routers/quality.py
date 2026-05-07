@@ -359,10 +359,12 @@ def list_stage_inspection(
 
 
 def _stage_row_has_measurement(row: StageInspection) -> bool:
-    for attr in ("measured_1", "measured_2", "measured_3", "measured_mean"):
-        v = getattr(row, attr, None)
-        if v is not None and str(v).strip():
-            return True
+    if row.measurements:
+        for v in row.measurements:
+            if str(v).strip():
+                return True
+    if row.measured_mean and str(row.measured_mean).strip():
+        return True
     return False
 
 
@@ -384,6 +386,17 @@ def stage_inspection_measurement_summary(
         .all()
     )
     return StageInspectionMeasurementSummary(any_recorded=any(_stage_row_has_measurement(r) for r in rows))
+
+
+def _master_boc_id_from_stage_bbox(bbox_str: str) -> Optional[int]:
+    if not bbox_str:
+        return None
+    try:
+        o = json.loads(bbox_str)
+        mid = o.get("master_boc_id")
+        return int(mid) if mid is not None else None
+    except:
+        return None
 
 
 @router.post("/stage-inspection/ensure", response_model=List[StageInspectionResponse])
@@ -431,10 +444,31 @@ def ensure_stage_inspection_rows(
     )
     by_master_qty: dict[tuple[int, int], StageInspection] = {}
     for row in existing:
-        mid = _master_boc_id_from_stage_bbox(row.bbox)
+        mid = None
+        try:
+            mid = _master_boc_id_from_stage_bbox(row.bbox)
+        except:
+            pass
+
+        if mid is None:
+            # Fallback for older rows: match by characteristic values
+            for m in masters:
+                if (str(m.nominal) == str(row.nominal_value) and 
+                    str(m.zone) == str(row.zone) and 
+                    str(m.dimension_type) == str(row.dimension_type)):
+                    mid = m.id
+                    try:
+                        row.bbox = json.dumps({"master_boc_id": mid})
+                    except:
+                        pass
+                    break
+        
         if mid is not None:
-            row_q = row.quantity_no if row.quantity_no is not None else 1
-            by_master_qty[(mid, int(row_q))] = row
+            try:
+                row_q = int(row.quantity_no) if row.quantity_no is not None else 1
+                by_master_qty[(mid, row_q)] = row
+            except:
+                continue
 
     for m in masters:
         key = (m.id, int(quantity_no))
@@ -451,9 +485,7 @@ def ensure_stage_inspection_rows(
             lowertol=m.lowertol,
             zone=m.zone,
             dimension_type=m.dimension_type,
-            measured_1="",
-            measured_2="",
-            measured_3="",
+            measurements=[],
             measured_mean="",
             measured_instrument=inst,
             used_inst=inst,
@@ -506,9 +538,13 @@ def patch_stage_inspection(
     data = body.model_dump(exclude_unset=True)
     for k, v in data.items():
         setattr(row, k, v)
-    db.commit()
-    db.refresh(row)
-    return row
+    try:
+        db.commit()
+        db.refresh(row)
+        return row
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/notes", response_model=NoteResponse, status_code=status.HTTP_201_CREATED)

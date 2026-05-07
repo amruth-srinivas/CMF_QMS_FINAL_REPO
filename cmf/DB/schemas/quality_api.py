@@ -55,10 +55,8 @@ class StageInspectionResponse(BaseModel):
     lowertol: float
     zone: str
     dimension_type: str
-    measured_1: str
-    measured_2: str
-    measured_3: str
-    measured_mean: str
+    measurements: List[str] = []
+    measured_mean: Optional[str] = None
     measured_instrument: str
     used_inst: str
     op_no: int
@@ -70,9 +68,7 @@ class StageInspectionResponse(BaseModel):
 
 
 class StageInspectionUpdate(BaseModel):
-    measured_1: Optional[str] = None
-    measured_2: Optional[str] = None
-    measured_3: Optional[str] = None
+    measurements: Optional[List[str]] = None
     measured_mean: Optional[str] = None
     measured_instrument: Optional[str] = None
     is_done: Optional[bool] = None
