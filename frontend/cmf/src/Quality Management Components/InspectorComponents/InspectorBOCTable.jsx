@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef } from 'react';
-import { Table, Tag, Typography, Space, Button, Empty, Popover, Select, Divider, Input } from 'antd';
+import { Table, Tag, Typography, Space, Button, Empty, Popover, Select, Divider, Input, message } from 'antd';
 import { FilterOutlined, UnorderedListOutlined, EditOutlined, LeftOutlined, RightOutlined } from '@ant-design/icons';
 
 const { Text } = Typography;
@@ -101,13 +101,38 @@ const InspectorBOCTable = ({
   measureMode = false,
   onMeasurePatch,
   onPlanPatch,
-  quantityOptions = [{ value: 1, label: 'Quantity 1' }],
-  quantityNo = 1,
   onQuantityChange,
   quantityLocked = false,
   /** Hide plan editing actions (e.g. after plan is confirmed) */
   planEditLocked = false,
+  quantityOptions = [],
+  quantityNo = 1,
 }) => {
+  const [qtyInput, setQtyInput] = React.useState('');
+
+  useEffect(() => {
+    setQtyInput(quantityNo === 'consolidated' ? 'ALL' : String(quantityNo));
+  }, [quantityNo]);
+
+  const handleQtySubmit = () => {
+    const val = (qtyInput || '').trim().toUpperCase();
+    if (!val) {
+      setQtyInput(quantityNo === 'consolidated' ? 'ALL' : String(quantityNo));
+      return;
+    }
+    if (val === 'ALL' || val === 'CONSOLIDATED') {
+      onQuantityChange?.('consolidated');
+      return;
+    }
+    const n = parseInt(val, 10);
+    const max = quantityOptions.filter(o => typeof o.value === 'number').length;
+    if (Number.isNaN(n) || n < 1 || n > max) {
+      message.warning(`Quantity ${val} does not exist (Max: ${max})`);
+      setQtyInput(quantityNo === 'consolidated' ? 'ALL' : String(quantityNo));
+      return;
+    }
+    onQuantityChange?.(n);
+  };
   const rangeAnchorIndexRef = useRef(null);
   const tableScrollRef = useRef(null);
   const suppressRowClickRef = useRef(false);
@@ -296,7 +321,7 @@ const InspectorBOCTable = ({
         const meanStr = computeMeanFromStrings(mList);
         console.log(`[InspectorBOCTable] Calculated mean for stage row ${stageId}:`, meanStr, 'from inputs:', mList);
         const numVals = mList.map((v) => parseMeasurementNum(v));
-        const allFilled = numVals.length >= 3 && numVals.every((v) => v != null);
+        const allFilled = numVals.length > 0 && numVals.every((v) => v != null);
         const payload = {
           measurements: mList,
           measured_mean: meanStr || '',
@@ -362,7 +387,7 @@ const InspectorBOCTable = ({
               const meanStr = computeMeanFromStrings(mList);
               console.log(`[InspectorBOCTable] onBlur mean for stage row ${stageId}:`, meanStr, 'from inputs:', mList);
               const numVals = mList.map((v) => parseMeasurementNum(v));
-              const allFilled = numVals.length >= 3 && numVals.every((v) => v != null);
+              const allFilled = numVals.length > 0 && numVals.every((v) => v != null);
               
               const payload = {
                 measurements: mList,
@@ -385,9 +410,11 @@ const InspectorBOCTable = ({
       const display = v != null && String(v).trim() !== '' ? String(v) : '—';
       const status = checkPassFail(v, record);
       
-      if (status === 'pass') {
-        return (
-          <div style={cellCenter}>
+      const content = (
+        <div 
+          style={{ ...cellCenter }}
+        >
+          {status === 'pass' ? (
             <Tag 
               color="success" 
               bordered={false}
@@ -404,13 +431,7 @@ const InspectorBOCTable = ({
             >
               {display}
             </Tag>
-          </div>
-        );
-      }
-
-      if (status === 'fail') {
-        return (
-          <div style={cellCenter}>
+          ) : status === 'fail' ? (
             <Tag 
               color="error" 
               bordered={false}
@@ -427,17 +448,15 @@ const InspectorBOCTable = ({
             >
               {display}
             </Tag>
-          </div>
-        );
-      }
-
-      return (
-        <div style={cellCenter}>
-          <Text style={{ fontSize: '11px', color: '#8c8c8c' }}>
-            {display}
-          </Text>
+          ) : (
+            <Text style={{ fontSize: '11px', color: '#8c8c8c' }}>
+              {display}
+            </Text>
+          )}
         </div>
       );
+
+      return content;
     },
     [],
   );
@@ -620,7 +639,7 @@ const InspectorBOCTable = ({
     };
 
     if (measureMode) {
-      return [
+      const result = [
         baseCols[0], // ID
         baseCols[5], // ZONE
         baseCols[1], // NOMINAL
@@ -628,9 +647,10 @@ const InspectorBOCTable = ({
         baseCols[3], // LTOL
         baseCols[4], // DIM TYPE
         actualCol,   // ACTUAL
-        ...mCols,
-        instrumentCol,
       ];
+      result.push(...mCols);
+      result.push(instrumentCol);
+      return result;
     }
     // Plan mode: [ID, ZONE, NOMINAL, UTOL, LTOL, DIM TYPE, INSTRUMENT]
     return [
@@ -726,59 +746,69 @@ const InspectorBOCTable = ({
         </Space>
         <Space wrap>
           {measureMode && (
-            <div style={{ display: 'flex', alignItems: 'center', background: '#f5f5f5', padding: '2px 4px', borderRadius: 6, border: '1px solid #d9d9d9' }}>
-              <Button 
-                size="small" 
-                type="text" 
-                icon={<LeftOutlined style={{ fontSize: 10 }} />} 
-                disabled={quantityNo <= 1}
-                onClick={() => onQuantityChange?.(quantityNo - 1)}
-                style={{ width: 24, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-              />
-              <Input
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              background: '#f8fafc',
+              border: '1px solid #e2e8f0',
+              borderRadius: '6px',
+              padding: '1px 4px',
+              gap: 6
+            }}>
+              <Button
                 size="small"
-                defaultValue={quantityNo}
-                key={quantityNo} // Reset when quantityNo changes from outside
-                style={{ 
-                  width: 32, 
-                  textAlign: 'center', 
-                  padding: 0, 
-                  height: 22, 
-                  fontSize: 11, 
-                  fontWeight: 700, 
-                  border: 'none', 
-                  background: 'transparent',
-                  color: '#1890ff'
+                type="text"
+                icon={<LeftOutlined style={{ fontSize: 10 }} />}
+                disabled={quantityNo === 1 || quantityOptions.length <= 1}
+                onClick={() => {
+                  const idx = quantityOptions.findIndex(o => o.value === quantityNo);
+                  if (idx > 0) onQuantityChange?.(quantityOptions[idx - 1].value);
                 }}
-                onPressEnter={(e) => {
-                  const val = e.target.value.replace(/[^0-9]/g, '');
-                  const n = Number(val);
-                  const max = quantityOptions?.length || 1;
-                  if (n >= 1 && n <= max) {
-                    onQuantityChange?.(n);
-                  } else {
-                    e.target.value = quantityNo; // Revert
-                  }
-                }}
-                onBlur={(e) => {
-                  const val = e.target.value.replace(/[^0-9]/g, '');
-                  const n = Number(val);
-                  const max = quantityOptions?.length || 1;
-                  if (n >= 1 && n <= max) {
-                    onQuantityChange?.(n);
-                  } else {
-                    e.target.value = quantityNo; // Revert
-                  }
-                }}
+                style={{ width: 22, height: 22, padding: 0 }}
               />
-              <Text style={{ fontSize: 11, color: '#8c8c8c', userSelect: 'none', marginInline: '2px 4px' }}>/ {quantityOptions?.length || 1}</Text>
-              <Button 
-                size="small" 
-                type="text" 
-                icon={<RightOutlined style={{ fontSize: 10 }} />} 
-                disabled={quantityNo >= (quantityOptions?.length || 1)}
-                onClick={() => onQuantityChange?.(quantityNo + 1)}
-                style={{ width: 24, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                minWidth: 50,
+                gap: 2
+              }}>
+                <Input
+                  size="small"
+                  variant="borderless"
+                  value={qtyInput}
+                  onChange={(e) => setQtyInput(e.target.value)}
+                  onPressEnter={handleQtySubmit}
+                  onBlur={handleQtySubmit}
+                  style={{
+                    width: qtyInput === 'ALL' ? 32 : 24,
+                    textAlign: qtyInput === 'ALL' ? 'center' : 'right',
+                    fontSize: '11px',
+                    fontWeight: 700,
+                    color: '#334155',
+                    padding: 0,
+                    height: '22px',
+                    fontFamily: '"JetBrains Mono", monospace',
+                  }}
+                />
+                {quantityNo !== 'consolidated' && (
+                  <Text style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 600, userSelect: 'none' }}>
+                    / {quantityOptions.filter(o => typeof o.value === 'number').length}
+                  </Text>
+                )}
+              </div>
+              <Button
+                size="small"
+                type="text"
+                icon={<RightOutlined style={{ fontSize: 10 }} />}
+                disabled={quantityNo === 'consolidated' || (quantityNo === quantityOptions.filter(o => typeof o.value === 'number').length && !quantityOptions.some(o => o.value === 'consolidated'))}
+                onClick={() => {
+                  const idx = quantityOptions.findIndex(o => o.value === quantityNo);
+                  if (idx >= 0 && idx < quantityOptions.length - 1) {
+                    onQuantityChange?.(quantityOptions[idx + 1].value);
+                  }
+                }}
+                style={{ width: 22, height: 22, padding: 0 }}
               />
             </div>
           )}
