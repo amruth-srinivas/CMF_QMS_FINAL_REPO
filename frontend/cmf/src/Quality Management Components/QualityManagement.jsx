@@ -1131,12 +1131,9 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
     if (!ftpApproveRows?.length) return false;
     return ftpApproveRows.every((r) => {
       const vals = (r.measurements || []).map(m => parseNum(m)).filter(v => v != null);
-<<<<<<< HEAD
       return vals.length >= 3;
-=======
       // Relaxed from >= 3 to >= 1 to allow FTP approval even if fewer samples are entered
       return vals.length >= 1;
->>>>>>> alpv2
     });
   }, [ftpApproveRows]);
 
