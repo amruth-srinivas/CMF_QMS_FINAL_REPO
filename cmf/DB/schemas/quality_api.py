@@ -78,6 +78,8 @@ class StageInspectionMeasurementSummary(BaseModel):
     """True if any stage row for this part/order/op has a non-empty measurement field."""
 
     any_recorded: bool
+    qty1_complete: bool = False
+    qty_max: int = 1
 
 
 class FTPStatusUpsert(BaseModel):

@@ -86,11 +86,39 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
   const [measureRows, setMeasureRows] = useState([]);
   const [measureQtyOptions, setMeasureQtyOptions] = useState([{ value: 1, label: 'Qty 1' }]);
   const [measureQty, setMeasureQty] = useState(1);
+  const [measureQtyInput, setMeasureQtyInput] = useState('');
+
+  useEffect(() => {
+    setMeasureQtyInput(measureQty === 'consolidated' ? 'ALL' : String(measureQty));
+  }, [measureQty]);
+
+  const handleMeasureQtySubmit = () => {
+    const val = (measureQtyInput || '').trim().toUpperCase();
+    if (!val) {
+      setMeasureQtyInput(measureQty === 'consolidated' ? 'ALL' : String(measureQty));
+      return;
+    }
+    if (val === 'ALL' || val === 'CONSOLIDATED') {
+      setMeasureQty('consolidated');
+      return;
+    }
+    const n = parseInt(val, 10);
+    const max = measureQtyOptions.filter(o => typeof o.value === 'number').length;
+    if (Number.isNaN(n) || n < 1 || n > max) {
+      message.warning(`Quantity ${val} does not exist (Max: ${max})`);
+      setMeasureQtyInput(measureQty === 'consolidated' ? 'ALL' : String(measureQty));
+      return;
+    }
+    setMeasureQty(n);
+  };
   const [measureContext, setMeasureContext] = useState(null);
+  const [measureMasterRows, setMeasureMasterRows] = useState([]);
   /** FTP status for the operation shown in Measurements modal (quality.ftp_status) */
   const [measureFtpStatus, setMeasureFtpStatus] = useState(null);
   /** Bump to reload ensure + rows after supervisor approves FTP while modal is open */
   const [measureLoadNonce, setMeasureLoadNonce] = useState(0);
+  const [measureQty1Complete, setMeasureQty1Complete] = useState(false);
+  const [measureMaxQty, setMeasureMaxQty] = useState(1);
   /** Supervisor: preview Qty 1 measurements before confirming FTP approval */
   const [ftpApproveModalOpen, setFtpApproveModalOpen] = useState(false);
   const [ftpApproveLoading, setFtpApproveLoading] = useState(false);
@@ -351,6 +379,9 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
         const projectName = hierarchy?.product?.product_name || '';
         const assembly = selectedItem.assembly_name || 'Main';
 
+        const maxSamples = Math.max(3, ...reportRows.map(r => (r.measurements || []).length));
+        const totalCols = (reportQty === 'consolidated' ? 1 : 0) + 10 + maxSamples;
+        
         setReportPrintData({
           reportNo: `RPT-${oid}-${opNo}`,
           componentTitle: selectedItem.part_name,
@@ -362,6 +393,8 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
           totalQuantity: reportQty === 'consolidated' ? 'Consolidated' : String(reportQty),
           assembly: assembly,
           rows: reportRows,
+          maxSamples: maxSamples,
+          totalCols: totalCols,
           approvedBy: inspectionPlanConfirmedByOp[opNo] || '—'
         });
 
@@ -383,30 +416,56 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('Inspection Report');
 
-    // 13 columns mirroring the preview table structure:
-    // A=SlNo, B-C=Specified Values, D=Zone, E=Sample1, F=Sample2, G=Sample3, H=Remarks
-    // I-L used for Hardness test block (4 cols), M=trailing blank col
-    worksheet.columns = [
-      { width: 20 }, // A  – logo / Sl No / Labels
-      { width: 14 }, // B  – Specified Values (part 1)
-      { width: 14 }, // C  – Specified Values (part 2)
-      { width: 10 }, // D  – Zone
-      { width: 14 }, // E  – Sample 1 / Labels
-      { width: 14 }, // F  – Sample 2
-      { width: 14 }, // G  – Sample 3
-      { width: 18 }, // H  – Remarks Label / Test Labels
-      { width: 14 }, // I  – (Hardness Labels)
-      { width: 14 }, // J  – (Hardness col 2)
-      { width: 14 }, // K  – (Hardness col 3)
-      { width: 14 }, // L  – (Hardness col 4)
-      { width: 5  }, // M  – trailing blank
-    ];
+    const maxS = reportPrintData.maxSamples || 3;
+    const isConsolidated = reportPrintData.totalQuantity === 'Consolidated';
+    const totalCols = reportPrintData.totalCols || (isConsolidated ? 14 : 13);
+
+    // Column Index Mapping
+    const COL_SL = 1;
+    const COL_SPEC_START = 2;
+    const COL_SPEC_END = 3;
+    const COL_QTY = isConsolidated ? 4 : null;
+    const COL_ZONE = isConsolidated ? 5 : 4;
+    const COL_MEASURED_START = isConsolidated ? 6 : 5;
+    const COL_MEASURED_END = COL_MEASURED_START + maxS - 1;
+    const COL_INSTR_START = COL_MEASURED_END + 1;
+    const COL_INSTR_END = COL_INSTR_START + 1;
+    const COL_REMARKS_START = COL_INSTR_END + 1;
+    const COL_REMARKS_END = totalCols - 1; // Last but one
+    const COL_TRAILING = totalCols;
+
+    const getColLetter = (n) => {
+      let s = "";
+      while (n > 0) {
+        let r = (n - 1) % 26;
+        s = String.fromCharCode(65 + r) + s;
+        n = Math.floor((n - 1) / 26);
+      }
+      return s;
+    };
+
+    const cols = [];
+    for (let i = 1; i <= totalCols; i++) {
+      if (i === COL_SL) cols.push({ width: 20 });
+      else if (i >= COL_SPEC_START && i <= COL_SPEC_END) cols.push({ width: 14 });
+      else if (i === COL_ZONE || i === COL_QTY) cols.push({ width: 10 });
+      else if (i >= COL_MEASURED_START && i <= COL_MEASURED_END) cols.push({ width: 14 });
+      else if (i >= COL_INSTR_START && i <= COL_INSTR_END) cols.push({ width: 14 });
+      else if (i >= COL_REMARKS_START && i <= COL_REMARKS_END) cols.push({ width: 18 });
+      else if (i === COL_TRAILING) cols.push({ width: 5 });
+      else cols.push({ width: 14 });
+    }
+    worksheet.columns = cols;
 
     const thin = { style: 'thin' };
     const bs = { top: thin, left: thin, bottom: thin, right: thin };
 
     const applyBorder = (cell) => { cell.border = bs; };
-    const applyBorderRange = (cols, row) => cols.forEach(c => applyBorder(worksheet.getCell(`${c}${row}`)));
+    const applyBorderRange = (startCol, endCol, row) => {
+      for (let i = startCol; i <= endCol; i++) {
+        applyBorder(worksheet.getCell(`${getColLetter(i)}${row}`));
+      }
+    };
 
     const styleHeader = (cell, fontSize = 11) => {
       cell.font = { bold: true, size: fontSize };
@@ -417,7 +476,6 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
 
     // ── Row 1: Logo and Title ──
     const cmtiCell = worksheet.getCell('A1');
-    cmtiCell.value = '';
     applyBorder(cmtiCell);
     try {
       const logoRes = await fetch(cmtiLogo);
@@ -428,25 +486,18 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
           tl: { col: 0, row: 0 },
           ext: { width: 88, height: 28 },
         });
-      } else {
-        cmtiCell.value = 'CMTI';
-        cmtiCell.font = { bold: true, size: 12, color: { argb: 'FF003366' } };
       }
-    } catch {
-      cmtiCell.value = 'CMTI';
-      cmtiCell.font = { bold: true, size: 12, color: { argb: 'FF003366' } };
-    }
+    } catch {}
 
-    worksheet.mergeCells('B1:M1');
+    worksheet.mergeCells(`${getColLetter(COL_SPEC_START)}1:${getColLetter(COL_TRAILING)}1`);
     const titleCell = worksheet.getCell('B1');
     titleCell.value = 'INSPECTION REPORT';
     titleCell.font = { bold: true, size: 14 };
     titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
-    applyBorder(titleCell);
-    ['C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M'].forEach((c) => applyBorder(worksheet.getCell(`${c}1`)));
+    applyBorderRange(1, totalCols, 1);
     worksheet.getRow(1).height = 30;
 
-    // ── Rows 2-4: Meta fields (Aligned with Table Sections) ──
+    // ── Rows 2-4: Meta fields ──
     const metaRows = [
       { row: 2, l1: 'Report No :',   v1: reportPrintData.reportNo,       l2: 'Component Title:', v2: reportPrintData.componentTitle, l3: 'Date:',     v3: reportPrintData.date               },
       { row: 3, l1: 'Project No.:', v1: reportPrintData.projectNo,       l2: 'Drg No:',          v2: reportPrintData.drgNo,          l3: 'Sheet',      v3: reportPrintData.sheet || '1 of 1' },
@@ -454,195 +505,150 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
     ];
 
     metaRows.forEach(({ row, l1, v1, l2, v2, l3, v3 }) => {
-      // Section 1: Label A, Value B-D
       const label1 = worksheet.getCell(`A${row}`);
       label1.value = l1; label1.font = { bold: true, size: 10 }; 
       label1.alignment = { horizontal: 'right', vertical: 'middle', indent: 1 }; 
       applyBorder(label1);
 
-      worksheet.mergeCells(`B${row}:D${row}`);
-      const val1 = worksheet.getCell(`B${row}`);
+      const split1 = Math.floor((COL_ZONE - COL_SPEC_START + 1) / 2) + COL_SPEC_START;
+      worksheet.mergeCells(`${getColLetter(COL_SPEC_START)}${row}:${getColLetter(COL_ZONE)}${row}`);
+      const val1 = worksheet.getCell(`${getColLetter(COL_SPEC_START)}${row}`);
       val1.value = v1; val1.alignment = { horizontal: 'center', vertical: 'middle' }; 
-      applyBorderRange(['B','C','D'], row);
+      applyBorderRange(COL_SPEC_START, COL_ZONE, row);
 
-      // Section 2: Label E, Value F-G
-      const label2 = worksheet.getCell(`E${row}`);
+      const label2 = worksheet.getCell(`${getColLetter(COL_MEASURED_START)}${row}`);
       label2.value = l2; label2.font = { bold: true, size: 10 }; 
       label2.alignment = { horizontal: 'right', vertical: 'middle' }; 
       applyBorder(label2);
 
-      worksheet.mergeCells(`F${row}:G${row}`);
-      const val2 = worksheet.getCell(`F${row}`);
+      worksheet.mergeCells(`${getColLetter(COL_MEASURED_START + 1)}${row}:${getColLetter(COL_MEASURED_END)}${row}`);
+      const val2 = worksheet.getCell(`${getColLetter(COL_MEASURED_START + 1)}${row}`);
       val2.value = v2; val2.alignment = { horizontal: 'center', vertical: 'middle' }; 
-      applyBorderRange(['F','G'], row);
+      applyBorderRange(COL_MEASURED_START, COL_MEASURED_END, row);
 
-      // Section 3: Label H, Value I-M
-      const label3 = worksheet.getCell(`H${row}`);
+      const label3 = worksheet.getCell(`${getColLetter(COL_INSTR_START)}${row}`);
       label3.value = l3; label3.font = { bold: true, size: 10 }; 
       label3.alignment = { horizontal: 'right', vertical: 'middle', indent: 1 }; 
       applyBorder(label3);
 
-      worksheet.mergeCells(`I${row}:M${row}`);
-      const val3 = worksheet.getCell(`I${row}`);
+      worksheet.mergeCells(`${getColLetter(COL_INSTR_START + 1)}${row}:${getColLetter(COL_TRAILING)}${row}`);
+      const val3 = worksheet.getCell(`${getColLetter(COL_INSTR_START + 1)}${row}`);
       val3.value = v3; val3.alignment = { horizontal: 'center', vertical: 'middle' }; 
-      applyBorderRange(['I','J','K','L','M'], row);
-
+      applyBorderRange(COL_INSTR_START, COL_TRAILING, row);
       worksheet.getRow(row).height = 22;
     });
 
-    // ── Rows 5-6: Table Header ─────────────────────────────────────────────────
-    const isConsolidated = reportPrintData.totalQuantity === 'Consolidated';
-
+    // ── Rows 5-6: Table Header ──
     worksheet.mergeCells('A5:A6');
     styleHeader(worksheet.getCell('A5')); worksheet.getCell('A5').value = 'Sl No';
 
-    worksheet.mergeCells('B5:C6');
-    styleHeader(worksheet.getCell('B5')); worksheet.getCell('B5').value = 'Specified Values';
-    applyBorderRange(['B','C'], 5); applyBorderRange(['B','C'], 6);
+    worksheet.mergeCells(`${getColLetter(COL_SPEC_START)}5:${getColLetter(COL_SPEC_END)}6`);
+    styleHeader(worksheet.getCell(`${getColLetter(COL_SPEC_START)}5`)); 
+    worksheet.getCell(`${getColLetter(COL_SPEC_START)}5`).value = 'Specified Values';
+    applyBorderRange(COL_SPEC_START, COL_SPEC_END, 5); applyBorderRange(COL_SPEC_START, COL_SPEC_END, 6);
 
     if (isConsolidated) {
-      worksheet.mergeCells('D5:D6');
-      styleHeader(worksheet.getCell('D5')); worksheet.getCell('D5').value = 'Qty';
-      
-      worksheet.mergeCells('E5:E6');
-      styleHeader(worksheet.getCell('E5')); worksheet.getCell('E5').value = 'Zone';
-
-      worksheet.mergeCells('F5:H5');
-      styleHeader(worksheet.getCell('F5')); worksheet.getCell('F5').value = 'Measured Values';
-      applyBorderRange(['F','G','H'], 5);
-      worksheet.getCell('F6').value = '1'; styleHeader(worksheet.getCell('F6'));
-      worksheet.getCell('G6').value = '2'; styleHeader(worksheet.getCell('G6'));
-      worksheet.getCell('H6').value = '3'; styleHeader(worksheet.getCell('H6'));
-
-      worksheet.mergeCells('I5:J6');
-      styleHeader(worksheet.getCell('I5')); worksheet.getCell('I5').value = 'Instrument';
-      applyBorderRange(['I','J'], 5); applyBorderRange(['I','J'], 6);
-
-      worksheet.mergeCells('K5:M6');
-      styleHeader(worksheet.getCell('K5')); worksheet.getCell('K5').value = 'Remarks';
-      applyBorderRange(['K','L','M'], 5); applyBorderRange(['K','L','M'], 6);
-    } else {
-      worksheet.mergeCells('D5:D6');
-      styleHeader(worksheet.getCell('D5')); worksheet.getCell('D5').value = 'Zone';
-
-      worksheet.mergeCells('E5:G5');
-      styleHeader(worksheet.getCell('E5')); worksheet.getCell('E5').value = 'Measured Values';
-      applyBorderRange(['E','F','G'], 5);
-      worksheet.getCell('E6').value = '1'; styleHeader(worksheet.getCell('E6'));
-      worksheet.getCell('F6').value = '2'; styleHeader(worksheet.getCell('F6'));
-      worksheet.getCell('G6').value = '3'; styleHeader(worksheet.getCell('G6'));
-
-      worksheet.mergeCells('H5:I6');
-      styleHeader(worksheet.getCell('H5')); worksheet.getCell('H5').value = 'Instrument';
-      applyBorderRange(['H','I'], 5); applyBorderRange(['H','I'], 6);
-
-      worksheet.mergeCells('J5:M6');
-      styleHeader(worksheet.getCell('J5')); worksheet.getCell('J5').value = 'Remarks';
-      applyBorderRange(['J','K','L','M'], 5); applyBorderRange(['J','K','L','M'], 6);
+      worksheet.mergeCells(`${getColLetter(COL_QTY)}5:${getColLetter(COL_QTY)}6`);
+      styleHeader(worksheet.getCell(`${getColLetter(COL_QTY)}5`)); worksheet.getCell(`${getColLetter(COL_QTY)}5`).value = 'Qty';
     }
 
-    worksheet.getRow(5).height = 16;
-    worksheet.getRow(6).height = 16;
-    
+    worksheet.mergeCells(`${getColLetter(COL_ZONE)}5:${getColLetter(COL_ZONE)}6`);
+    styleHeader(worksheet.getCell(`${getColLetter(COL_ZONE)}5`)); worksheet.getCell(`${getColLetter(COL_ZONE)}5`).value = 'Zone';
+
+    worksheet.mergeCells(`${getColLetter(COL_MEASURED_START)}5:${getColLetter(COL_MEASURED_END)}5`);
+    styleHeader(worksheet.getCell(`${getColLetter(COL_MEASURED_START)}5`)); worksheet.getCell(`${getColLetter(COL_MEASURED_START)}5`).value = 'Measured Values';
+    applyBorderRange(COL_MEASURED_START, COL_MEASURED_END, 5);
+    for (let i = 0; i < maxS; i++) {
+      const c = worksheet.getCell(`${getColLetter(COL_MEASURED_START + i)}6`);
+      c.value = i + 1; styleHeader(c);
+    }
+
+    worksheet.mergeCells(`${getColLetter(COL_INSTR_START)}5:${getColLetter(COL_INSTR_END)}6`);
+    styleHeader(worksheet.getCell(`${getColLetter(COL_INSTR_START)}5`)); worksheet.getCell(`${getColLetter(COL_INSTR_START)}5`).value = 'Instrument';
+    applyBorderRange(COL_INSTR_START, COL_INSTR_END, 5); applyBorderRange(COL_INSTR_START, COL_INSTR_END, 6);
+
+    worksheet.mergeCells(`${getColLetter(COL_REMARKS_START)}5:${getColLetter(COL_TRAILING)}6`);
+    styleHeader(worksheet.getCell(`${getColLetter(COL_REMARKS_START)}5`)); worksheet.getCell(`${getColLetter(COL_REMARKS_START)}5`).value = 'Remarks';
+    applyBorderRange(COL_REMARKS_START, COL_TRAILING, 5); applyBorderRange(COL_REMARKS_START, COL_TRAILING, 6);
+
     let cur = 7;
     reportPrintData.rows.forEach(r => {
       worksheet.getCell(`A${cur}`).value = r.sno;
-      worksheet.mergeCells(`B${cur}:C${cur}`);
-      worksheet.getCell(`B${cur}`).value = r.specified;
-      worksheet.getCell(`B${cur}`).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
+      worksheet.mergeCells(`${getColLetter(COL_SPEC_START)}${cur}:${getColLetter(COL_SPEC_END)}${cur}`);
+      worksheet.getCell(`${getColLetter(COL_SPEC_START)}${cur}`).value = r.specified;
+      worksheet.getCell(`${getColLetter(COL_SPEC_START)}${cur}`).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
       
       if (isConsolidated) {
-        worksheet.getCell(`D${cur}`).value = r.qty;
-        worksheet.getCell(`E${cur}`).value = r.zone;
-        worksheet.getCell(`F${cur}`).value = r.measurements[0];
-        worksheet.getCell(`G${cur}`).value = r.measurements[1];
-        worksheet.getCell(`H${cur}`).value = r.measurements[2];
-        worksheet.mergeCells(`I${cur}:J${cur}`);
-        worksheet.getCell(`I${cur}`).value = r.instrument || 'default';
-        worksheet.mergeCells(`K${cur}:M${cur}`);
-        worksheet.getCell(`K${cur}`).value = r.remarks || '';
-        worksheet.getCell(`K${cur}`).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
-      } else {
-        worksheet.getCell(`D${cur}`).value = r.zone;
-        worksheet.getCell(`E${cur}`).value = r.measurements[0];
-        worksheet.getCell(`F${cur}`).value = r.measurements[1];
-        worksheet.getCell(`G${cur}`).value = r.measurements[2];
-        worksheet.mergeCells(`H${cur}:I${cur}`);
-        worksheet.getCell(`H${cur}`).value = r.instrument || 'default';
-        worksheet.mergeCells(`J${cur}:M${cur}`);
-        worksheet.getCell(`J${cur}`).value = r.remarks || '';
-        worksheet.getCell(`J${cur}`).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
+        worksheet.getCell(`${getColLetter(COL_QTY)}${cur}`).value = r.qty;
       }
+      worksheet.getCell(`${getColLetter(COL_ZONE)}${cur}`).value = r.zone;
+      for (let i = 0; i < maxS; i++) {
+        worksheet.getCell(`${getColLetter(COL_MEASURED_START + i)}${cur}`).value = r.measurements[i] || '';
+      }
+      worksheet.mergeCells(`${getColLetter(COL_INSTR_START)}${cur}:${getColLetter(COL_INSTR_END)}${cur}`);
+      worksheet.getCell(`${getColLetter(COL_INSTR_START)}${cur}`).value = r.instrument || 'default';
+      worksheet.mergeCells(`${getColLetter(COL_REMARKS_START)}${cur}:${getColLetter(COL_TRAILING)}${cur}`);
+      worksheet.getCell(`${getColLetter(COL_REMARKS_START)}${cur}`).value = r.remarks || '';
+      worksheet.getCell(`${getColLetter(COL_REMARKS_START)}${cur}`).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
 
-      ['A','B','C','D','E','F','G','H','I','J','K','L','M'].forEach(col => {
-        const c = worksheet.getCell(`${col}${cur}`);
+      for (let i = 1; i <= totalCols; i++) {
+        const c = worksheet.getCell(`${getColLetter(i)}${cur}`);
         c.border = bs;
-        if (col !== 'B' && col !== 'H' && col !== 'K' && col !== 'J') {
+        if (i === COL_SL || i === COL_ZONE || i === COL_QTY || (i >= COL_MEASURED_START && i <= COL_MEASURED_END) || (i >= COL_INSTR_START && i <= COL_INSTR_END)) {
            c.alignment = { horizontal: 'center', vertical: 'middle' };
         }
-      });
+      }
       worksheet.getRow(cur).height = 20;
       cur++;
     });
 
     const testTitleRow = cur;
     const testSectionColor = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8E8E8' } };
+    const chunk = Math.floor(totalCols / 3);
     
-    worksheet.mergeCells(`A${testTitleRow}:D${testTitleRow}`);
+    worksheet.mergeCells(`A${testTitleRow}:${getColLetter(chunk)}${testTitleRow}`);
     const chemTitle = worksheet.getCell(`A${testTitleRow}`);
     chemTitle.value = 'Chemical Test';
     chemTitle.font = { bold: true }; chemTitle.alignment = { horizontal: 'center', vertical: 'middle' };
     chemTitle.fill = testSectionColor;
-    applyBorderRange(['A','B','C','D'], testTitleRow);
+    applyBorderRange(1, chunk, testTitleRow);
 
-    worksheet.mergeCells(`E${testTitleRow}:H${testTitleRow}`);
-    const ultTitle = worksheet.getCell(`E${testTitleRow}`);
+    worksheet.mergeCells(`${getColLetter(chunk + 1)}${testTitleRow}:${getColLetter(chunk * 2)}${testTitleRow}`);
+    const ultTitle = worksheet.getCell(`${getColLetter(chunk + 1)}${testTitleRow}`);
     ultTitle.value = 'Ultrasonic Test';
     ultTitle.font = { bold: true }; ultTitle.alignment = { horizontal: 'center', vertical: 'middle' };
     ultTitle.fill = testSectionColor;
-    applyBorderRange(['E','F','G','H'], testTitleRow);
+    applyBorderRange(chunk + 1, chunk * 2, testTitleRow);
 
-    worksheet.mergeCells(`I${testTitleRow}:L${testTitleRow}`);
-    const hardTitle = worksheet.getCell(`I${testTitleRow}`);
+    worksheet.mergeCells(`${getColLetter(chunk * 2 + 1)}${testTitleRow}:${getColLetter(totalCols)}${testTitleRow}`);
+    const hardTitle = worksheet.getCell(`${getColLetter(chunk * 2 + 1)}${testTitleRow}`);
     hardTitle.value = 'Hardness Test';
     hardTitle.font = { bold: true }; hardTitle.alignment = { horizontal: 'center', vertical: 'middle' };
     hardTitle.fill = testSectionColor;
-    applyBorderRange(['I','J','K','L'], testTitleRow);
+    applyBorderRange(chunk * 2 + 1, totalCols, testTitleRow);
 
-    applyBorder(worksheet.getCell(`M${testTitleRow}`));
     worksheet.getRow(testTitleRow).height = 18;
     cur++;
 
-    const labelFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF3F4F6' } };
     const writeTestRow = (row, chemL, ultL, hardL) => {
-      const setTestCell = (col, val, isLabel = false) => {
-        const c = worksheet.getCell(`${col}${row}`);
+      const setTestCell = (colIdx, val, isLabel = false) => {
+        const c = worksheet.getCell(`${getColLetter(colIdx)}${row}`);
         c.value = val;
         if (isLabel) {
            c.font = { bold: true };
-           c.fill = labelFill;
+           c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF3F4F6' } };
            c.alignment = { horizontal: 'right', vertical: 'middle', indent: 1 };
         } else {
            c.alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
         }
         applyBorder(c);
       };
-      setTestCell('A', chemL, true);
-      setTestCell('B', ''); applyBorder(worksheet.getCell(`B${row}`));
-      worksheet.mergeCells(`C${row}:D${row}`);
-      applyBorderRange(['C','D'], row);
-
-      setTestCell('E', ultL, true);
-      setTestCell('F', ''); applyBorder(worksheet.getCell(`F${row}`));
-      worksheet.mergeCells(`G${row}:H${row}`);
-      applyBorderRange(['G','H'], row);
-
-      setTestCell('I', hardL, true);
-      setTestCell('J', ''); applyBorder(worksheet.getCell(`J${row}`));
-      worksheet.mergeCells(`K${row}:L${row}`);
-      applyBorderRange(['K','L'], row);
-
-      applyBorder(worksheet.getCell(`M${row}`));
+      setTestCell(1, chemL, true);
+      applyBorderRange(2, chunk, row);
+      setTestCell(chunk + 1, ultL, true);
+      applyBorderRange(chunk + 2, chunk * 2, row);
+      setTestCell(chunk * 2 + 1, hardL, true);
+      applyBorderRange(chunk * 2 + 2, totalCols, row);
       worksheet.getRow(row).height = 18;
     };
 
@@ -652,38 +658,21 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
     writeTestRow(cur, 'Status', 'Status', 'Status'); cur++;
 
     const footerRow = cur;
-    worksheet.mergeCells(`A${footerRow}:C${footerRow + 2}`);
+    const footChunk = Math.floor(totalCols / 3);
+    worksheet.mergeCells(`A${footerRow}:${getColLetter(footChunk)}${footerRow + 2}`);
     const inspCell = worksheet.getCell(`A${footerRow}`);
-    inspCell.value = {
-      richText: [
-        { font: { bold: true }, text: 'Inspected by:' }
-      ]
-    };
+    inspCell.value = { richText: [{ font: { bold: true }, text: 'Inspected by:' }] };
     inspCell.alignment = { vertical: 'top', horizontal: 'left', wrapText: true, indent: 1 };
-    applyBorderRange(['A','B','C'], footerRow);
-    applyBorderRange(['A','B','C'], footerRow+1);
-    applyBorderRange(['A','B','C'], footerRow+2);
+    applyBorderRange(1, footChunk, footerRow); applyBorderRange(1, footChunk, footerRow+1); applyBorderRange(1, footChunk, footerRow+2);
 
-    worksheet.mergeCells(`D${footerRow}:J${footerRow + 2}`);
-    const checkCell = worksheet.getCell(`D${footerRow}`);
-    checkCell.value = {
-      richText: [
-        { font: { bold: true }, text: 'Checked by:' }
-      ]
-    };
+    worksheet.mergeCells(`${getColLetter(footChunk + 1)}${footerRow}:${getColLetter(footChunk * 2)}${footerRow + 2}`);
+    const checkCell = worksheet.getCell(`${getColLetter(footChunk + 1)}${footerRow}`);
+    checkCell.value = { richText: [{ font: { bold: true }, text: 'Checked by:' }] };
     checkCell.alignment = { vertical: 'top', horizontal: 'left', wrapText: true, indent: 1 };
-    ['D','E','F','G','H','I','J'].forEach(c => {
-       applyBorder(worksheet.getCell(`${c}${footerRow}`));
-       applyBorder(worksheet.getCell(`${c}${footerRow+1}`));
-       applyBorder(worksheet.getCell(`${c}${footerRow+2}`));
-    });
+    applyBorderRange(footChunk + 1, footChunk * 2, footerRow); applyBorderRange(footChunk + 1, footChunk * 2, footerRow+1); applyBorderRange(footChunk + 1, footChunk * 2, footerRow+2);
 
-    worksheet.mergeCells(`K${footerRow}:M${footerRow + 2}`);
-    ['K','L','M'].forEach(c => {
-       applyBorder(worksheet.getCell(`${c}${footerRow}`));
-       applyBorder(worksheet.getCell(`${c}${footerRow+1}`));
-       applyBorder(worksheet.getCell(`${c}${footerRow+2}`));
-    });
+    worksheet.mergeCells(`${getColLetter(footChunk * 2 + 1)}${footerRow}:${getColLetter(totalCols)}${footerRow + 2}`);
+    applyBorderRange(footChunk * 2 + 1, totalCols, footerRow); applyBorderRange(footChunk * 2 + 1, totalCols, footerRow+1); applyBorderRange(footChunk * 2 + 1, totalCols, footerRow+2);
 
     worksheet.getRow(footerRow).height = 20;
     worksheet.getRow(footerRow + 1).height = 20;
@@ -1031,6 +1020,50 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
   };
 
   const measureDecoratedRows = useMemo(() => {
+    // 1. If we have master rows, use them as the structural base (standard single-qty view)
+    if (measureMasterRows && measureMasterRows.length > 0 && !measurePartMode && measureQty !== 'consolidated') {
+      return measureMasterRows.map(m => {
+        // Find matching measurement row by checking the bbox master_boc_id
+        const r = (measureRows || []).find(sr => {
+          try {
+             const bbox = typeof sr.bbox === 'string' ? JSON.parse(sr.bbox) : sr.bbox;
+             return bbox?.master_boc_id === m.id;
+          } catch(e) { return false; }
+        });
+        
+        // Use measurement row if found, else build a shell from master characteristic
+        const row = r ? { ...r } : { 
+          ...m, 
+          nominal_value: m.nominal, 
+          uppertol: m.uppertol, 
+          lowertol: m.lowertol,
+          measurements: [],
+          zone: m.zone,
+          dimension_type: m.dimension_type,
+          id: `missing-${m.id}` // Temporary ID for Table rowKey
+        };
+        
+        const nominal = parseNum(row.nominal_value);
+        const upper = parseNum(row.uppertol);
+        const lower = parseNum(row.lowertol);
+        const mean = computeMeanFromMeasurements(row);
+        const upperLimit = nominal != null && upper != null ? nominal + upper : null;
+        const lowerLimit = nominal != null && lower != null ? nominal + lower : null;
+        const hasTolerance = Math.abs(upper || 0) > 1e-12 || Math.abs(lower || 0) > 1e-12;
+        const withinTolerance =
+          hasTolerance &&
+          mean != null &&
+          upperLimit != null &&
+          lowerLimit != null &&
+          mean <= upperLimit &&
+          mean >= lowerLimit;
+        const outOfTolerance = hasTolerance && mean != null && !withinTolerance;
+        const status = !hasTolerance ? 'no_tolerance' : withinTolerance ? 'within' : outOfTolerance ? 'out' : 'pending';
+        return { ...row, _upperLimit: upperLimit, _lowerLimit: lowerLimit, _computedMean: mean, _status: status };
+      });
+    }
+
+    // 2. Fallback to mapping measureRows directly (Consolidated or Part Overview)
     return (measureRows || []).map((r) => {
       const nominal = parseNum(r.nominal_value);
       const upper = parseNum(r.uppertol);
@@ -1050,7 +1083,7 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
       const status = !hasTolerance ? 'no_tolerance' : withinTolerance ? 'within' : outOfTolerance ? 'out' : 'pending';
       return { ...r, _upperLimit: upperLimit, _lowerLimit: lowerLimit, _computedMean: mean, _status: status };
     });
-  }, [measureRows]);
+  }, [measureRows, measureMasterRows, measurePartMode, measureQty]);
 
   /** Every BOC row for the selected quantity has #1–#3 empty — no real measurements yet. */
   const measureAllReadingsEmpty = useMemo(() => {
@@ -1098,7 +1131,12 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
     if (!ftpApproveRows?.length) return false;
     return ftpApproveRows.every((r) => {
       const vals = (r.measurements || []).map(m => parseNum(m)).filter(v => v != null);
+<<<<<<< HEAD
       return vals.length >= 3;
+=======
+      // Relaxed from >= 3 to >= 1 to allow FTP approval even if fewer samples are entered
+      return vals.length >= 1;
+>>>>>>> alpv2
     });
   }, [ftpApproveRows]);
 
@@ -1314,21 +1352,56 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
     setMeasureQty(1);
     setMeasureModalLoading(true);
     try {
-      let qtyMax = 1;
+      let currentQtyMax = 1;
       try {
         const p = await axios.get(`${QUALITY_API_BASE_URL}/parts/${selectedItem.id}`);
         const q = Number(p.data?.qty);
-        if (Number.isFinite(q) && q >= 1) qtyMax = Math.min(999, Math.floor(q));
+        if (Number.isFinite(q) && q >= 1) currentQtyMax = Math.min(999, Math.floor(q));
       } catch {
-        qtyMax = 1;
+        currentQtyMax = 1;
       }
-      const qOpts = Array.from({ length: qtyMax }, (_, i) => ({ value: i + 1, label: `Qty ${i + 1}` }));
-      if (isSupervisorView) {
-        qOpts.push({ value: 'consolidated', label: 'Consolidated' });
+      setMeasureMaxQty(currentQtyMax);
+
+      const ipid = buildFtpIpid(selectedItem.part_number, opNo);
+      
+      let qOpts = [];
+      try {
+        const [ftpRes, summaryRes] = await Promise.all([
+          axios.get(`${QUALITY_API_BASE_URL}/quality/ftp-status`, { params: { order_id: oid, ipid, op_no: opNo } }),
+          axios.get(`${QUALITY_API_BASE_URL}/quality/stage-inspection/measurement-summary`, { params: { part_id: selectedItem.id, sale_order_id: oid, op_no: opNo } })
+        ]);
+        
+        const status = ftpRes.data?.status || null;
+        const isQty1Complete = Boolean(summaryRes.data?.qty1_complete);
+        const backendQtyMax = Number(summaryRes.data?.qty_max) || 1;
+        
+        setMeasureFtpStatus(status);
+        setMeasureQty1Complete(isQty1Complete);
+        
+        const ftpApproved = status === 'approved';
+        const q1Done = isQty1Complete;
+        
+        // Use the qty_max from the summary backend if possible, else fallback to what we already have
+        const finalQtyMax = Math.max(currentQtyMax, backendQtyMax);
+        
+        // If FTP is approved, we should generally allow navigation as it implies Qty 1 was acceptable
+        const canNavigateToOthers = ftpApproved || q1Done || isSupervisorView;
+        const limit = canNavigateToOthers ? finalQtyMax : 1;
+        
+        qOpts = Array.from({ length: limit }, (_, i) => ({ value: i + 1, label: `Qty ${i + 1}` }));
+        if (canNavigateToOthers) {
+          qOpts.push({ value: 'consolidated', label: 'Consolidated' });
+        }
+      } catch (err) {
+        console.warn('Failed to fetch FTP/Summary', err);
+        setMeasureFtpStatus(null);
+        setMeasureQty1Complete(false);
+        qOpts = [{ value: 1, label: 'Qty 1' }];
       }
+      
       setMeasureQtyOptions(qOpts);
       setMeasureQty(1);
-      const ipid = buildFtpIpid(selectedItem.part_number, opNo);
+
       try {
         await axios.post(`${QUALITY_API_BASE_URL}/quality/stage-inspection/ensure`, null, {
           params: {
@@ -1348,14 +1421,6 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
         params: { part_id: selectedItem.id, sale_order_id: oid, op_no: opNo, quantity_no: 1 },
       });
       setMeasureRows(Array.isArray(res.data) ? res.data : []);
-      try {
-        const fr = await axios.get(`${QUALITY_API_BASE_URL}/quality/ftp-status`, {
-          params: { order_id: oid, ipid, op_no: opNo },
-        });
-        setMeasureFtpStatus(fr.data?.status || null);
-      } catch {
-        setMeasureFtpStatus(null);
-      }
     } catch (err) {
       console.error(err);
       const detail = err.response?.data?.detail;
@@ -1414,13 +1479,31 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
           allRows.push(...opResults.flat());
         }
 
-        if (!cancelled) setMeasureRows(allRows);
+        const masterRes = await axios.get(`${QUALITY_API_BASE_URL}/quality/master-boc`, {
+          params: { part_id: partNo, sales_order_id: oid, op_no: measurePartMode ? undefined : measureContext.opNo }
+        });
+        const masterRows = masterRes.data || [];
+        if (!cancelled) {
+          setMeasureMasterRows(masterRows);
+          setMeasureRows(allRows);
+        }
 
-        if (!measurePartMode && measureQty !== 'consolidated') {
+        if (!measurePartMode) {
           try {
-            const ipid = buildFtpIpid(partNo, measureContext.opNo);
+            const opNo = measureContext.opNo;
+            const ipid = buildFtpIpid(partNo, opNo);
+            
+            // Always try to ensure rows for the selected quantity
+            if (typeof measureQty === 'number') {
+              try {
+                await axios.post(`${QUALITY_API_BASE_URL}/quality/stage-inspection/ensure`, null, {
+                  params: { part_id: partPk, part_number: partNo, sale_order_id: oid, op_no: opNo, quantity_no: measureQty, ipid, user_id: 1 },
+                });
+              } catch (e) { console.warn('ensure failed', e); }
+            }
+
             const fr = await axios.get(`${QUALITY_API_BASE_URL}/quality/ftp-status`, {
-              params: { order_id: oid, ipid, op_no: measureContext.opNo },
+              params: { order_id: oid, ipid, op_no: opNo },
             });
             if (!cancelled) setMeasureFtpStatus(fr.data?.status || null);
           } catch {
@@ -2088,28 +2171,75 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                     </div>
                     <Space align="center" size={12}>
                       <Text style={{ fontFamily: '"JetBrains Mono", "Consolas", "Courier New", monospace' }}><b>Qty:</b></Text>
-                      <Select
-                        size="small"
-                        style={{ width: 140 }}
-                        value={measureQty}
-                        options={measureQtyOptions}
-                        onChange={(val) => {
-                          if (val === 'consolidated') {
-                            if (measureFtpStatus !== 'approved') {
-                              message.warning('Please obtain FTP approval for quantity 1 before viewing consolidated data.');
-                              return;
+                      <div style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        background: '#f8fafc',
+                        border: '1px solid #e2e8f0',
+                        borderRadius: '6px',
+                        padding: '1px 4px',
+                        gap: 6
+                      }}>
+                        <Button
+                          size="small"
+                          type="text"
+                          icon={<LeftOutlined style={{ fontSize: 10 }} />}
+                          disabled={measureQty === 1 || measureQtyOptions.length <= 1}
+                          onClick={() => {
+                            const idx = measureQtyOptions.findIndex(o => o.value === measureQty);
+                            if (idx > 0) setMeasureQty(measureQtyOptions[idx - 1].value);
+                          }}
+                          style={{ width: 22, height: 22, padding: 0 }}
+                        />
+                        <div style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          minWidth: 50,
+                          gap: 2
+                        }}>
+                          <Input
+                            size="small"
+                            variant="borderless"
+                            value={measureQtyInput}
+                            onChange={(e) => setMeasureQtyInput(e.target.value)}
+                            onPressEnter={handleMeasureQtySubmit}
+                            onBlur={handleMeasureQtySubmit}
+                            style={{
+                              width: measureQtyInput === 'ALL' ? 32 : 24,
+                              textAlign: measureQtyInput === 'ALL' ? 'center' : 'right',
+                              fontSize: '11px',
+                              fontWeight: 700,
+                              color: '#334155',
+                              padding: 0,
+                              height: '22px',
+                              fontFamily: '"JetBrains Mono", monospace',
+                            }}
+                          />
+                          {measureQty !== 'consolidated' && (
+                            <Text style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 600, userSelect: 'none' }}>
+                              / {measureQtyOptions.filter(o => typeof o.value === 'number').length}
+                            </Text>
+                          )}
+                        </div>
+                        <Button
+                          size="small"
+                          type="text"
+                          icon={<RightOutlined style={{ fontSize: 10 }} />}
+                          disabled={measureQty === 'consolidated' || (measureQty === measureQtyOptions.filter(o => typeof o.value === 'number').length && !measureQtyOptions.some(o => o.value === 'consolidated'))}
+                          onClick={() => {
+                            const idx = measureQtyOptions.findIndex(o => o.value === measureQty);
+                            if (idx >= 0 && idx < measureQtyOptions.length - 1) {
+                              setMeasureQty(measureQtyOptions[idx + 1].value);
                             }
-                          } else if (typeof val === 'number' && val > 1) {
-                            if (measureFtpStatus !== 'approved') {
-                              message.warning('Please obtain FTP approval for quantity 1 before proceeding to other quantities.');
-                              return;
-                            }
-                          }
-                          setMeasureQty(val);
-                        }}
-                      />
+                          }}
+                          style={{ width: 22, height: 22, padding: 0 }}
+                        />
+                      </div>
                     </Space>
                   </div>
+
+
                   {measureQty > 1 && measureFtpStatus !== 'approved' ? (
                     <Alert
                       type="warning"
@@ -2119,10 +2249,8 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                     />
                   ) : null}
                   <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, background: '#fff', overflow: 'hidden' }}>
-                    {measureAllReadingsEmpty && !measureModalLoading ? (
-                      <div style={{ padding: 40 }}>
-                        <Empty description="No measurements found" />
-                      </div>
+                    {measureModalLoading ? (
+                      <div style={{ padding: 40, textAlign: 'center' }}><Spin /></div>
                     ) : (
                       <>
                         <div style={{ padding: '8px 12px', borderBottom: '1px solid #eef0f3', background: '#fafbfc', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -2696,7 +2824,7 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                         <td className="report-cmti">
                           <img src={cmtiLogo} alt="CMTI" className="report-cmti-logo" />
                         </td>
-                        <td colSpan={12} className="report-header-title">INSPECTION REPORT</td>
+                        <td colSpan={(reportPrintData?.totalCols || 13) - 1} className="report-header-title">INSPECTION REPORT</td>
                       </tr>
 
                       <tr className="report-meta-tight">
@@ -2729,14 +2857,14 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                         <td rowSpan={2} colSpan={2}>Specified Values</td>
                         {reportPrintData?.totalQuantity === 'Consolidated' && <td rowSpan={2}>Quantity</td>}
                         <td rowSpan={2}>Zone</td>
-                        <td colSpan={3}>Measured Values</td>
+                        <td colSpan={reportPrintData?.maxSamples || 3}>Measured Values</td>
                         <td rowSpan={2} colSpan={2}>Instrument</td>
-                        <td rowSpan={2} colSpan={reportPrintData?.totalQuantity === 'Consolidated' ? 3 : 4}>Remarks</td>
+                        <td rowSpan={2} colSpan={4}>Remarks</td>
                       </tr>
                       <tr className="report-boc-head">
-                        <td>1</td>
-                        <td>2</td>
-                        <td>3</td>
+                        {Array.from({ length: reportPrintData?.maxSamples || 3 }).map((_, i) => (
+                          <td key={i}>{i + 1}</td>
+                        ))}
                       </tr>
 
                       {reportPrintData?.rows?.map((row, i) => (
@@ -2745,21 +2873,21 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                           <td colSpan={2} className="report-tl">{row.specified}</td>
                           {reportPrintData?.totalQuantity === 'Consolidated' && <td>{row.qty}</td>}
                           <td>{row.zone}</td>
-                          {(row.measurements || []).slice(0, 3).map((m, mi) => (
-                            <td key={mi}>{m !== '' && m != null ? m : ''}</td>
-                          ))}
+                          {Array.from({ length: reportPrintData?.maxSamples || 3 }).map((_, mi) => {
+                            const m = row.measurements[mi];
+                            return <td key={mi}>{m !== '' && m != null ? m : ''}</td>;
+                          })}
                           <td colSpan={2}>{row.instrument || 'default'}</td>
-                          <td colSpan={reportPrintData?.totalQuantity === 'Consolidated' ? 3 : 4} className="report-tl">{row.remarks || ''}</td>
+                          <td colSpan={4} className="report-tl">{row.remarks || ''}</td>
                         </tr>
                       ))}
 
 
 
                       <tr className="report-section-head">
-                        <td colSpan={4}>Chemical Test</td>
-                        <td colSpan={4}>Ultrasonic Test</td>
-                        <td colSpan={4}>Hardness Test</td>
-                        <td />
+                        <td colSpan={Math.floor((reportPrintData?.totalCols || 13) / 3)}>Chemical Test</td>
+                        <td colSpan={Math.floor((reportPrintData?.totalCols || 13) / 3)}>Ultrasonic Test</td>
+                        <td colSpan={(reportPrintData?.totalCols || 13) - 2 * Math.floor((reportPrintData?.totalCols || 13) / 3)}>Hardness Test</td>
                       </tr>
                       <tr>
                         <td className="report-meta-label">Date</td>

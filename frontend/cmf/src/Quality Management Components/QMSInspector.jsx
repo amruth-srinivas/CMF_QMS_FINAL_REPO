@@ -159,6 +159,7 @@ const QMSInspector = () => {
   const [activeTab, setActiveTab] = useState('characteristics');
   const [notes, setNotes] = useState([]);
   const [notesLoading, setNotesLoading] = useState(false);
+  const [qty1Complete, setQty1Complete] = useState(false);
 
   useLayoutEffect(() => {
     const el = viewerWrapRef.current;
@@ -257,17 +258,29 @@ const QMSInspector = () => {
     };
   }, [partId]);
 
+  const canNavigateToOthers = ftpApproved || qty1Complete;
+
   useEffect(() => {
-    setQuantityNo((q) => Math.min(Math.max(1, q), partQtyMax));
-  }, [partQtyMax]);
+    setQuantityNo((q) => {
+      const next = Math.min(Math.max(1, q), partQtyMax);
+      if (next > 1 && !canNavigateToOthers) return 1;
+      return next;
+    });
+  }, [partQtyMax, canNavigateToOthers]);
 
   const quantityOptions = useMemo(
-    () =>
-      Array.from({ length: partQtyMax }, (_, i) => ({
+    () => {
+      const limit = canNavigateToOthers ? partQtyMax : 1;
+      const opts = Array.from({ length: limit }, (_, i) => ({
         value: i + 1,
         label: `Quantity ${i + 1}`,
-      })),
-    [partQtyMax],
+      }));
+      if (canNavigateToOthers) {
+        opts.push({ value: 'consolidated', label: 'Consolidated' });
+      }
+      return opts;
+    },
+    [partQtyMax, canNavigateToOthers],
   );
 
   const fetchMasterBoc = useCallback(async () => {
@@ -346,8 +359,15 @@ const QMSInspector = () => {
         params: { part_id: pid, sale_order_id: oid, op_no: opNo },
       });
       setHasStageMeasurements(Boolean(res.data?.any_recorded));
+      setQty1Complete(Boolean(res.data?.qty1_complete));
+      
+      const bQty = Number(res.data?.qty_max);
+      if (bQty > 0 && bQty !== maxQty) {
+        setMaxQty(bQty);
+      }
     } catch {
       setHasStageMeasurements(false);
+      setQty1Complete(false);
     }
   }, [partId, salesOrderId, opNo, partNumber]);
 
@@ -417,10 +437,30 @@ const QMSInspector = () => {
 
   const fetchStageRows = useCallback(async () => {
     if (inspectorMode !== 'MEASURE') return;
-    if (quantityNo > 1 && !ftpApproved) return;
+
     const pid = partId ? Number(partId) : null;
     const oid = Number(salesOrderId);
     if (!pid || !oid || !partNumber) return;
+
+    // 1. Handle Consolidated / ALL view: Fetch existing measurements without 'ensuring' (POST)
+    // The 'ensure' endpoint requires a specific integer quantity_no.
+    const isNumericQty = typeof quantityNo === 'number';
+
+    if (!isNumericQty) {
+      try {
+        const res = await axios.get(`${QUALITY_API_BASE_URL}/quality/stage-inspection`, {
+          params: { part_id: pid, sale_order_id: oid, op_no: opNo },
+        });
+        setStageRows(Array.isArray(res.data) ? res.data : []);
+      } catch (err) {
+        console.error('[QMSInspector] Failed to fetch consolidated rows:', err);
+        setStageRows([]);
+      }
+      return;
+    }
+
+    // 2. Handle specific quantity view: Ensure rows exist before fetching
+    if (quantityNo > 1 && !ftpApproved) return;
 
     try {
       const res = await axios.post(`${QUALITY_API_BASE_URL}/quality/stage-inspection/ensure`, null, {
@@ -436,7 +476,7 @@ const QMSInspector = () => {
       });
       setStageRows(res.data);
     } catch (err) {
-      console.error(err);
+      console.error('[QMSInspector] Failed to ensure stage measurements:', err);
       const detail = err.response?.data?.detail;
       message.error(typeof detail === 'string' ? detail : err.message || 'Failed to load measure data');
     }
@@ -521,7 +561,14 @@ const QMSInspector = () => {
 
   const firstQtyAllDone = useMemo(() => {
     if (quantityNo !== 1 || !bocTableData.length) return false;
-    return bocTableData.every((r) => Boolean(r.stageInspectionId) && Boolean(r.measureLocked));
+    // Relaxed: Allow submitting FTP if every characteristic has at least one measurement recorded
+    return bocTableData.every((r) => {
+      const measurements = r.measurements || [];
+      return measurements.some(m => {
+        const val = String(m ?? "").trim();
+        return val !== "" && val !== "—" && val !== "-";
+      });
+    });
   }, [quantityNo, bocTableData]);
 
   const handleRequestFtpApproval = useCallback(async () => {
@@ -1233,11 +1280,13 @@ const QMSInspector = () => {
         onApproveFtp={handleApproveFtpDirect}
         approveFtpDisabled={
           !bocTableData.length ||
-          !bocTableData.every((r) => 
-            String(r.m1 ?? "").trim() !== "" && 
-            String(r.m2 ?? "").trim() !== "" && 
-            String(r.m3 ?? "").trim() !== ""
-          )
+          !bocTableData.every((r) => {
+            const measurements = r.measurements || [];
+            return measurements.some(m => {
+              const val = String(m ?? "").trim();
+              return val !== "" && val !== "—" && val !== "-";
+            });
+          })
         }
       />
 
@@ -1374,13 +1423,13 @@ const QMSInspector = () => {
                     quantityOptions={quantityOptions}
                     quantityNo={quantityNo}
                     onQuantityChange={(newQty) => {
-                      if (newQty > 1 && !ftpApproved) {
-                        message.warning('Please obtain FTP approval for quantity 1 before proceeding to other quantities.');
+                      if (newQty > 1 && !canNavigateToOthers) {
+                        message.warning('Please obtain FTP approval and complete quantity 1 measurements before proceeding to other quantities.');
                         return;
                       }
                       setQuantityNo(newQty);
                     }}
-                    quantityLocked={!ftpApproved}
+                    quantityLocked={!canNavigateToOthers}
                     planEditLocked={bocEditLocked}
                   />
                 ),

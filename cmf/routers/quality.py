@@ -3,8 +3,11 @@ Quality schema API: Master BOC (bill of characteristics) persistence aligned wit
 """
 import json
 
+# pyrefly: ignore [missing-import]
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+# pyrefly: ignore [missing-import]
 from sqlalchemy import and_, or_, func
+# pyrefly: ignore [missing-import]
 from sqlalchemy.orm import Session
 from typing import List, Optional
 
@@ -375,17 +378,47 @@ def stage_inspection_measurement_summary(
     op_no: int = Query(...),
     db: Session = Depends(get_db),
 ):
-    """Across all quantity rows: whether any measurement value has been entered."""
-    rows = (
-        db.query(StageInspection)
-        .filter(
-            StageInspection.part_id == part_id,
-            StageInspection.sale_order_id == sale_order_id,
-            StageInspection.op_no == op_no,
-        )
-        .all()
-    )
-    return StageInspectionMeasurementSummary(any_recorded=any(_stage_row_has_measurement(r) for r in rows))
+    """Across all quantity rows: whether any measurement value has been entered and if Qty 1 is fully finished."""
+    rows = db.query(StageInspection).filter(
+        StageInspection.part_id == part_id,
+        StageInspection.sale_order_id == sale_order_id,
+        StageInspection.op_no == op_no,
+    ).all()
+    
+    any_recorded = any(_stage_row_has_measurement(r) for r in rows)
+    
+    qty1_complete = False
+    if rows:
+        part_number = db.query(Part).filter(Part.id == part_id).value(Part.part_number)
+        if part_number:
+            masters_count = db.query(MasterBoc).filter(
+                MasterBoc.part_id == part_number,
+                MasterBoc.sales_order_id == sale_order_id,
+                MasterBoc.op_no == op_no
+            ).count()
+            
+            if masters_count > 0:
+                # Count how many Qty 1 rows have at least one measurement
+                qty1_rows = [r for r in rows if (r.quantity_no == 1 or r.quantity_no is None)]
+                qty1_measured_count = sum(1 for r in qty1_rows if _stage_row_has_measurement(r))
+                print(f"DEBUG: part_id={part_id} op_no={op_no} masters={masters_count} qty1_measured={qty1_measured_count}")
+                qty1_complete = (qty1_measured_count >= masters_count)
+    
+    # Get the max quantity for this part from the parts table
+    qty_max = db.query(Part.qty).filter(Part.id == part_id).scalar() or 1
+
+    return StageInspectionMeasurementSummary(any_recorded=any_recorded, qty1_complete=qty1_complete, qty_max=qty_max)
+
+
+def _master_boc_id_from_stage_bbox(bbox_str: str) -> Optional[int]:
+    if not bbox_str:
+        return None
+    try:
+        o = json.loads(bbox_str)
+        mid = o.get("master_boc_id")
+        return int(mid) if mid is not None else None
+    except:
+        return None
 
 
 def _master_boc_id_from_stage_bbox(bbox_str: str) -> Optional[int]:
