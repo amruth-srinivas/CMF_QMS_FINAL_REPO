@@ -40,7 +40,9 @@ from .quality import (
 )
 from .scheduling import (
     OrderScheduleStatus,
-    PartScheduleStatus
+    PartScheduleStatus,
+    PlannedScheduleItem,
+    ProductionLog,
 )
 from .notifications import InspectionPlanNotification
 
@@ -55,6 +57,8 @@ __all__ = [
     "Order",
     "OrderScheduleStatus",
     "PartScheduleStatus",
+    "PlannedScheduleItem",
+    "ProductionLog",
     "OrderDocument",
     "OperationDocument",
     "OrderPartsRawMaterialLinked",

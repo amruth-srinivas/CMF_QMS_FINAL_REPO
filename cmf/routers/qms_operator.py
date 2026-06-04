@@ -1,10 +1,6 @@
 """
-Operator-facing QMS helpers: in-progress operations from scheduling service + local plan flags.
+Operator-facing QMS helpers: in-progress operations from production_logs + local plan flags.
 """
-import json
-import os
-import urllib.error
-import urllib.request
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -13,36 +9,89 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 # pyrefly: ignore [missing-import]
 from pydantic import BaseModel, Field
 # pyrefly: ignore [missing-import]
-from sqlalchemy import exists
+from sqlalchemy import exists, func
 # pyrefly: ignore [missing-import]
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, aliased, joinedload
 
 from DB.database import get_db
+from DB.models.configuration import Machine
 from DB.models.notifications import InspectionPlanNotification
 from DB.models.oms import Operation, OperationDocument, Order, Part
 from DB.models.quality import InspectionPlanStatus
+from DB.models.scheduling import PlannedScheduleItem, ProductionLog
 
 router = APIRouter(prefix="/operator", tags=["operator-qms"])
 
-SCHEDULING_API_BASE_URL = os.getenv(
-    "SCHEDULING_API_BASE_URL",
-    "http://172.18.7.85:8989/api/v1",
-).rstrip("/")
+
+def _machine_display_name(machine: Optional[Machine]) -> Optional[str]:
+    if not machine:
+        return None
+    return " ".join(p for p in (machine.type, machine.make, machine.model) if p).strip() or None
 
 
-def _fetch_scheduling_inprogress(machine_id: int) -> Dict[str, Any]:
-    url = f"{SCHEDULING_API_BASE_URL}/scheduling/inprogress-operations/{machine_id}"
-    req = urllib.request.Request(url, headers={"Accept": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            return json.loads(resp.read().decode())
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode() or str(e.reason)
-        raise HTTPException(status_code=e.code if 400 <= e.code < 600 else 502, detail=detail)
-    except urllib.error.URLError as e:
-        raise HTTPException(status_code=502, detail=f"Scheduling service unreachable: {e.reason}")
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Scheduling service error: {e}")
+def _started_at(log: ProductionLog) -> Optional[str]:
+    if log.from_date and log.from_time:
+        return datetime.combine(log.from_date, log.from_time).isoformat()
+    if log.created_at:
+        return log.created_at.isoformat()
+    return None
+
+
+def _fetch_production_logs_inprogress(db: Session, machine_id: int) -> Dict[str, Any]:
+    """Load in-progress rows from scheduling.production_logs for the given machine."""
+    machine = db.query(Machine).filter(Machine.id == machine_id).first()
+    machine_name = _machine_display_name(machine)
+
+    latest_psi_id = (
+        db.query(
+            PlannedScheduleItem.operation_id.label("operation_id"),
+            func.max(PlannedScheduleItem.id).label("max_id"),
+        )
+        .group_by(PlannedScheduleItem.operation_id)
+        .subquery()
+    )
+    latest_psi = aliased(PlannedScheduleItem)
+
+    rows = (
+        db.query(ProductionLog, Operation, Part, latest_psi)
+        .join(Operation, Operation.id == ProductionLog.operation_id)
+        .join(Part, Part.id == Operation.part_id)
+        .outerjoin(latest_psi_id, latest_psi_id.c.operation_id == ProductionLog.operation_id)
+        .outerjoin(latest_psi, latest_psi.id == latest_psi_id.c.max_id)
+        .filter(Operation.machine_id == machine_id)
+        .filter(func.lower(func.trim(ProductionLog.status)) == "inprogress")
+        .order_by(ProductionLog.created_at.desc())
+        .all()
+    )
+
+    operations: List[Dict[str, Any]] = []
+    for log, op, part, psi in rows:
+        order_id = psi.sale_order_id if psi else None
+        sale_order_number = psi.sale_order_number if psi else None
+        operations.append(
+            {
+                "production_log_id": log.id,
+                "order_id": order_id,
+                "sale_order_number": sale_order_number,
+                "part_id": part.id,
+                "part_number": part.part_number,
+                "part_name": part.part_name,
+                "operation_id": op.id,
+                "operation_number": op.operation_number,
+                "operation_name": op.operation_name,
+                "started_at": _started_at(log),
+                "produced_quantity": log.produced_quantity,
+                "approved_quantity": log.approved_quantity,
+                "operator_id": log.operator_id,
+            }
+        )
+
+    return {
+        "machine_id": machine_id,
+        "machine_name": machine_name,
+        "total_inprogress_operations": len(operations),
+        "operations": operations,
+    }
 
 
 def _parse_op_no(raw: Any) -> Optional[int]:
@@ -118,9 +167,10 @@ def _preview_operation_document(db: Session, operation_id: int) -> Optional[Oper
 @router.get("/machine-inprogress/{machine_id}")
 def get_machine_inprogress_with_plan(machine_id: int, db: Session = Depends(get_db)):
     """
-    Proxies scheduling in-progress operations and adds has_inspection_plan and preview document hints.
+    Lists in-progress operations from scheduling.production_logs for this machine,
+    and adds has_inspection_plan and preview document hints.
     """
-    data = _fetch_scheduling_inprogress(machine_id)
+    data = _fetch_production_logs_inprogress(db, machine_id)
     operations: List[Dict[str, Any]] = list(data.get("operations") or [])
     enriched: List[Dict[str, Any]] = []
 

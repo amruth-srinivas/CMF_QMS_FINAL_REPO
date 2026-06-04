@@ -1,3 +1,7 @@
+from dotenv import load_dotenv
+
+load_dotenv()
+
 # pyrefly: ignore [missing-import]
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -41,6 +45,7 @@ app.add_middleware(
         "http://127.0.0.1:5175",
         "http://172.18.100.98:5173",
         "http://172.18.100.98:5175",
+        '*'
     ],
     allow_credentials=True,
     allow_methods=["*"],
