@@ -32,23 +32,31 @@ except ImportError as e:
     logging.warning("PyMuPDF text extractor not available: %s", e)
     PyMuPDFTextExtractor = None
 
-OCRTextExtractor = None
+BackendOCRTextExtractor = None
+_OCR_EXTRACTOR_LOAD_ATTEMPTED = False
+
+try:
+    from pdf_processing.region_text_extraction import extract_text_from_region_hybrid
+except ImportError as e:
+    logging.warning("Hybrid text extraction not available: %s", e)
+    extract_text_from_region_hybrid = None
 
 
 def _load_ocr_extractor_class():
-    """Lazy-load OCRTextExtractor to avoid blocking FastAPI startup."""
-    global OCRTextExtractor
-    if OCRTextExtractor is not None:
+    """Lazy-load PaddleOCR extractor from pdf_processing/autoballoon (avoids blocking startup)."""
+    global BackendOCRTextExtractor, _OCR_EXTRACTOR_LOAD_ATTEMPTED
+    if _OCR_EXTRACTOR_LOAD_ATTEMPTED:
         return
+    _OCR_EXTRACTOR_LOAD_ATTEMPTED = True
     try:
-        from pdf_processing.ocr_extractor import TextExtractor as _OCRTextExtractor
-        OCRTextExtractor = _OCRTextExtractor
+        from pdf_processing.backend_ocr_extractor import TextExtractor as _BackendOCRTextExtractor
+        BackendOCRTextExtractor = _BackendOCRTextExtractor
     except ImportError as e:
         logging.warning(
-            "OCR extractor not available (install easyocr for scanned PDFs): %s",
+            "Backend PaddleOCR extractor not available (install paddleocr/paddlepaddle): %s",
             e,
         )
-        OCRTextExtractor = None
+        BackendOCRTextExtractor = None
 
 
 try:
@@ -83,7 +91,9 @@ _CMF_ROOT = Path(__file__).resolve().parent.parent
 
 def _gdt_model_search_paths() -> List[Path]:
     w = _CMF_ROOT / "pdf_processing" / "weights"
+    autoballoon_gdt = _CMF_ROOT / "pdf_processing" / "autoballoon" / "models" / "gdt_model_2.pt"
     return [
+        autoballoon_gdt,
         w / "best2.pt",
         w / "best.pt",
         _CMF_ROOT / "pdf_processing" / "best2.pt",
@@ -101,18 +111,172 @@ _ocr_extractor_instance = None
 
 
 def get_ocr_extractor():
-    """Get or create OCR extractor instance (for scanned PDFs)."""
+    """Get or create PaddleOCR extractor (pdf_processing/autoballoon pipeline)."""
     global _ocr_extractor_instance
-    # Ensure the OCR extractor class is loaded lazily to avoid
-    # heavy imports during application startup.
     _load_ocr_extractor_class()
-    if _ocr_extractor_instance is None and OCRTextExtractor is not None:
+    if _ocr_extractor_instance is None and BackendOCRTextExtractor is not None:
         try:
-            _ocr_extractor_instance = OCRTextExtractor(languages=["en"], gpu=False)
-            logger.info("OCR extractor initialized for scanned PDFs")
+            _ocr_extractor_instance = BackendOCRTextExtractor()
+            logger.info("Backend PaddleOCR extractor initialized")
         except Exception as e:
-            logger.error(f"Failed to initialize OCR extractor: {e}", exc_info=True)
+            logger.error("Failed to initialize PaddleOCR extractor: %s", e, exc_info=True)
     return _ocr_extractor_instance
+
+
+def _extract_region_text(
+    *,
+    pdf_path: str,
+    page_number: int,
+    region: dict,
+    scale_factor: float,
+    check_overlaps: bool,
+    existing_boxes: Optional[List],
+    iou_threshold: float,
+    rotation_angles: Optional[List[int]],
+    confidence_threshold: float = 0.3,
+) -> List[Dict]:
+    """OCR first (Paddle), PyMuPDF fallback when OCR yields no text."""
+    if extract_text_from_region_hybrid is None:
+        if not PyMuPDFTextExtractor:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Text extraction service not available",
+            )
+        if check_overlaps and existing_boxes:
+            return PyMuPDFTextExtractor.extract_text_with_overlap_check(
+                pdf_path=pdf_path,
+                page_number=page_number,
+                region=region,
+                existing_boxes=existing_boxes,
+                iou_threshold=iou_threshold,
+                scale_factor=scale_factor,
+            )
+        return PyMuPDFTextExtractor.extract_text_from_region(
+            pdf_path=pdf_path,
+            page_number=page_number,
+            region=region,
+            scale_factor=scale_factor,
+        )
+
+    return extract_text_from_region_hybrid(
+        pdf_path,
+        page_number,
+        region,
+        scale_factor=scale_factor,
+        check_overlaps=check_overlaps,
+        existing_boxes=existing_boxes,
+        iou_threshold=iou_threshold,
+        rotation_angles=rotation_angles,
+        confidence_threshold=confidence_threshold,
+        get_ocr_extractor=get_ocr_extractor,
+        pymupdf_extractor=PyMuPDFTextExtractor,
+    )
+
+
+def _process_dimensions_via_autoballoon(
+    file_path: str,
+    page_number: int,
+    region: dict,
+) -> Optional[Dict]:
+    """
+    Run the full autoballoon pipeline for a region.
+    Returns API payload on success, or None to fall back to legacy PyMuPDF + parser flow.
+    """
+    try:
+        from services import autoballoon_service
+    except ImportError:
+        return None
+
+    if not autoballoon_service.is_pipeline_available():
+        return None
+
+    user_region = [region["x"], region["y"], region["width"], region["height"]]
+    try:
+        pipeline_result = autoballoon_service.run_pipeline(
+            str(file_path),
+            page_index=page_number,
+            user_region=user_region,
+            max_ocr_dim=2048,
+            include_image=False,
+        )
+    except Exception as exc:
+        logger.warning("Autoballoon pipeline failed, using legacy dimension flow: %s", exc)
+        return None
+
+    inv_scale = 72.0 / 250.0
+    mapped_dimensions = autoballoon_service.map_pipeline_dimensions_to_api(
+        pipeline_result.get("parsed_dimensions", []),
+        inv_scale,
+    )
+    # Exclude title-block material / alloy lines (not in user selection scope).
+    mapped_dimensions = [
+        d
+        for d in mapped_dimensions
+        if str(d.get("dimension_type", "")).strip().lower() != "material"
+    ]
+
+    def _flat_bbox_to_quad(flat_bbox: List[float]) -> List[List[float]]:
+        if not flat_bbox or len(flat_bbox) < 4:
+            return []
+        x1, y1, x2, y2 = [float(v) for v in flat_bbox[:4]]
+        return [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
+
+    for dim in mapped_dimensions:
+        bbox = dim.get("bbox")
+        if isinstance(bbox, list) and len(bbox) >= 4 and isinstance(bbox[0], (int, float)):
+            dim["bbox"] = _flat_bbox_to_quad(bbox)
+
+    all_dimensions = mapped_dimensions
+    if not all_dimensions:
+        logger.info("Autoballoon pipeline returned no dimensions; using legacy flow")
+        return None
+
+    text_results = autoballoon_service.map_classified_detections_to_text_api(
+        pipeline_result.get("classified_detections", []),
+        inv_scale,
+    )
+    gdt_results = []
+    for gdt in pipeline_result.get("gdt_detections", []):
+        bbox = gdt.get("bbox")
+        if not bbox:
+            continue
+        scaled = [float(v) * inv_scale for v in bbox]
+        gdt_results.append(
+            {
+                "class_name": gdt.get("class", gdt.get("class_name", "Unknown")),
+                "confidence": float(gdt.get("score", gdt.get("confidence", 0.0))),
+                "box": [
+                    [scaled[0], scaled[1]],
+                    [scaled[2], scaled[1]],
+                    [scaled[2], scaled[3]],
+                    [scaled[0], scaled[3]],
+                ],
+            }
+        )
+
+    logger.info(
+        "Autoballoon pipeline: %s dimension(s), %s text detection(s), %s GDT detection(s)",
+        len(all_dimensions),
+        len(text_results),
+        len(gdt_results),
+    )
+
+    return {
+        "success": True,
+        "dimensions": all_dimensions,
+        "count": len(all_dimensions),
+        "text_dimensions": len(mapped_dimensions),
+        "gdt_dimensions": sum(
+            1 for d in mapped_dimensions if "gdt" in str(d.get("dimension_type", "")).lower()
+        ),
+        "material_dimensions": 0,
+        "text_detections": text_results,
+        "gdt_detections": gdt_results,
+        "dimension_parsing": all_dimensions,
+        "notes": [],
+        "note_count": 0,
+        "source": "autoballoon_pipeline",
+    }
 
 
 def get_pdf_type(document_id: int, db: Session) -> str:
@@ -123,7 +287,7 @@ def get_pdf_type(document_id: int, db: Session) -> str:
     t = (document.document_type or "").lower()
     if "scan" in t or "scanned" in t or "ocr" in t:
         return "scanned"
-        return "normal"
+    return "normal"
 
 
 def get_pdf_path_from_document(document_id: int, db: Session) -> tuple[str, Callable[[], None]]:
@@ -212,7 +376,7 @@ def _detect_zone_label(pdf_path: str, page_number: int, region: Dict[str, float]
 
 @router.post("/extract-text")
 async def extract_text(request: ExtractTextRequest, db: Session = Depends(get_db)):
-    """Extract text from a specific region of a PDF page. Uses OCR for scanned PDFs, PyMuPDF for normal."""
+    """Extract text from a region: PaddleOCR first, PyMuPDF vector text as fallback."""
     part = db.query(Part).filter(Part.id == request.part_id).first()
     if not part:
         raise HTTPException(
@@ -248,57 +412,27 @@ async def extract_text(request: ExtractTextRequest, db: Session = Depends(get_db
             "height": request.bounding_box.height,
         }
         
-        if pdf_type == "scanned":
-            ocr_extractor = get_ocr_extractor()
-            if not ocr_extractor:
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="OCR not available for scanned PDFs. Ensure EasyOCR is installed."
-                )
-            # Try all rotations when user hasn't set one (scanned text can be at any orientation)
-            rotation_angles = [request.rotation_angle] if request.rotation_angle is not None else [0, 90, 180, 270]
-            if request.check_overlaps and request.existing_boxes:
-                results = ocr_extractor.extract_text_with_overlap_check(
-                    pdf_path=str(file_path),
-                    page_number=page_number,
-                    region=region,
-                    existing_boxes=request.existing_boxes,
-                    iou_threshold=request.iou_threshold,
-                    scale_factor=request.scale_factor,
-                    confidence_threshold=0.3,
-                    rotation_angles=rotation_angles,
-                )
-            else:
-                results = ocr_extractor.extract_text_from_region(
-                    pdf_path=str(file_path),
-                    page_number=page_number,
-                    region=region,
-                    scale_factor=request.scale_factor,
-                    confidence_threshold=0.3,
-                    rotation_angles=rotation_angles,
-                )
-        else:
-            if not PyMuPDFTextExtractor:
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="Text extraction service not available"
-                )
-            if request.check_overlaps and request.existing_boxes:
-                results = PyMuPDFTextExtractor.extract_text_with_overlap_check(
-                    pdf_path=str(file_path),
-                    page_number=page_number,
-                    region=region,
-                    existing_boxes=request.existing_boxes,
-                    iou_threshold=request.iou_threshold,
-                    scale_factor=request.scale_factor,
-                )
-            else:
-                results = PyMuPDFTextExtractor.extract_text_from_region(
-                    pdf_path=str(file_path),
-                    page_number=page_number,
-                    region=region,
-                    scale_factor=request.scale_factor,
-                )
+        rotation_angles = (
+            [request.rotation_angle]
+            if request.rotation_angle is not None
+            else ([0, 90, 180, 270] if pdf_type == "scanned" else None)
+        )
+        if not get_ocr_extractor() and not PyMuPDFTextExtractor:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Text extraction unavailable. Install paddleocr/paddlepaddle or ensure PyMuPDF is available.",
+            )
+        results = _extract_region_text(
+            pdf_path=str(file_path),
+            page_number=page_number,
+            region=region,
+            scale_factor=request.scale_factor,
+            check_overlaps=bool(request.check_overlaps and request.existing_boxes),
+            existing_boxes=request.existing_boxes,
+            iou_threshold=request.iou_threshold,
+            rotation_angles=rotation_angles,
+            confidence_threshold=0.3,
+        )
         
         return {"success": True, "detections": results, "count": len(results)}
     except HTTPException:
@@ -414,7 +548,7 @@ async def extract_gdt(request: ExtractTextRequest, db: Session = Depends(get_db)
 async def process_dimensions(request: ProcessDimensionsRequest, db: Session = Depends(get_db)):
     """
     Process dimensions: Extract text, detect GDT, and parse dimensions.
-    Uses OCR for scanned PDFs, PyMuPDF for normal PDFs.
+    Uses PaddleOCR first, then PyMuPDF when OCR returns no text.
     """
     import re
     
@@ -470,62 +604,51 @@ async def process_dimensions(request: ProcessDimensionsRequest, db: Session = De
             _dbg_doc.close()
         except Exception as _e:
             logger.warning(f"Debug page info failed: {_e}")
+
+        pipeline_payload = _process_dimensions_via_autoballoon(
+            str(file_path), page_number, region
+        )
+        if pipeline_payload is not None:
+            for dim in pipeline_payload.get("dimensions", []):
+                dim["page"] = page_number + 1
+                dim_bbox = dim.get("bbox")
+                dim_region = _region_from_quad(dim_bbox) if isinstance(dim_bbox, list) else None
+                if dim_region:
+                    zone_label = _detect_zone_label(
+                        pdf_path=str(file_path),
+                        page_number=page_number,
+                        region=dim_region,
+                        scale_factor=request.scale_factor,
+                    )
+                    if zone_label:
+                        dim["zone"] = zone_label
+            return pipeline_payload
         
-        # Step 1: Extract text (OCR for scanned, PyMuPDF for normal)
-        logger.info("Step 1: Extracting text...")
+        # Step 1: Extract text (PaddleOCR first, PyMuPDF fallback)
+        logger.info("Step 1: Extracting text (legacy hybrid flow)...")
         logger.info(f"Region coordinates: x={region['x']:.2f}, y={region['y']:.2f}, width={region['width']:.2f}, height={region['height']:.2f}")
-        
-        if pdf_type == "scanned":
-            ocr_extractor = get_ocr_extractor()
-            if not ocr_extractor:
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="OCR not available for scanned PDFs. Ensure EasyOCR is installed."
-                )
-            # Try all rotations when user hasn't set one (scanned text can be at any orientation)
-            rotation_angles = [request.rotation_angle] if request.rotation_angle is not None else [0, 90, 180, 270]
-            if request.check_overlaps and request.existing_boxes:
-                text_results = ocr_extractor.extract_text_with_overlap_check(
-                    pdf_path=str(file_path),
-                    page_number=page_number,
-                    region=region,
-                    existing_boxes=request.existing_boxes,
-                    iou_threshold=request.iou_threshold,
-                    scale_factor=request.scale_factor,
-                    confidence_threshold=0.3,
-                    rotation_angles=rotation_angles,
-                )
-            else:
-                text_results = ocr_extractor.extract_text_from_region(
-                    pdf_path=str(file_path),
-                    page_number=page_number,
-                    region=region,
-                    scale_factor=request.scale_factor,
-                    confidence_threshold=0.3,
-                    rotation_angles=rotation_angles,
-                )
-        else:
-            if not PyMuPDFTextExtractor:
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="Text extraction service not available"
-                )
-            if request.check_overlaps and request.existing_boxes:
-                text_results = PyMuPDFTextExtractor.extract_text_with_overlap_check(
-                    pdf_path=str(file_path),
-                    page_number=page_number,
-                    region=region,
-                    existing_boxes=request.existing_boxes,
-                    iou_threshold=request.iou_threshold,
-                    scale_factor=request.scale_factor,
-                )
-            else:
-                text_results = PyMuPDFTextExtractor.extract_text_from_region(
-                    pdf_path=str(file_path),
-                    page_number=page_number,
-                    region=region,
-                    scale_factor=request.scale_factor,
-                )
+
+        rotation_angles = (
+            [request.rotation_angle]
+            if request.rotation_angle is not None
+            else ([0, 90, 180, 270] if pdf_type == "scanned" else None)
+        )
+        if not get_ocr_extractor() and not PyMuPDFTextExtractor:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Text extraction unavailable. Install paddleocr/paddlepaddle or ensure PyMuPDF is available.",
+            )
+        text_results = _extract_region_text(
+            pdf_path=str(file_path),
+            page_number=page_number,
+            region=region,
+            scale_factor=request.scale_factor,
+            check_overlaps=bool(request.check_overlaps and request.existing_boxes),
+            existing_boxes=request.existing_boxes,
+            iou_threshold=request.iou_threshold,
+            rotation_angles=rotation_angles,
+            confidence_threshold=0.3,
+        )
         logger.info(f"✓ Extracted {len(text_results)} text detections")
         
         if len(text_results) == 0:
@@ -1032,70 +1155,36 @@ async def process_dimensions(request: ProcessDimensionsRequest, db: Session = De
         all_dimension_results = gdt_dimension_results + filtered_dimension_results
         
         logger.info(f"✓ Total dimensions: {len(all_dimension_results)} ({len(filtered_dimension_results)} from text, {len(gdt_dimension_results)} from GDT)")
-        
-        # 🔥 BACKEND FIX: Combine Material + EN* entries before returning
-        logger.info("🔥 STEP 5: Combining Material entries on backend...")
-        
-        # Find unused text items (those not used in dimensions)
+
+        all_dimension_results = [
+            d
+            for d in all_dimension_results
+            if str(d.get("dimension_type", "")).strip().lower() != "material"
+        ]
+
+        # Find unused text items for note detection (exclude material/alloy lines)
         used_text_contents = set()
         for dim in all_dimension_results:
-            if 'text' in dim:
-                used_text_contents.add(dim['text'].strip())
-        
+            if "text" in dim:
+                used_text_contents.add(dim["text"].strip())
+
         unused_texts = []
         for text_item in text_results:
-            text_content = (text_item.get('text', '') or text_item.get('content', '')).strip()
-            if text_content and text_content not in used_text_contents:
-                unused_texts.append({
-                    'content': text_content,
-                    'box': text_item.get('box', text_item.get('bbox', []))
-                })
-        
-        logger.info(f"Found {len(unused_texts)} unused text items for material processing")
-        logger.debug(f"Unused texts: {[t['content'] for t in unused_texts]}")
-        
-        # Combine Material + EN* entries
-        material_entries = []
-        material_texts = [t for t in unused_texts if 'material' in t['content'].lower()]
-        en_texts = [t for t in unused_texts if re.match(r'^(en[a-z0-9]+|ms|ss|gi|ci)\b', t['content'], re.IGNORECASE)]
-        
-        logger.debug(f"Material texts found: {[t['content'] for t in material_texts]}")
-        logger.debug(f"EN texts found: {[t['content'] for t in en_texts]}")
-        
-        # 🔥 FORCE COMBINE ALL MATERIALS INTO ONE ENTRY
-        all_material_contents = []
-        all_material_boxes = []
-        
-        # Add all material texts
-        for t in material_texts:
-            all_material_contents.append(t['content'])
-            all_material_boxes.append(t['box'])
-        
-        # Add all EN texts
-        for t in en_texts:
-            all_material_contents.append(t['content'])
-            all_material_boxes.append(t['box'])
-        
-        if all_material_contents:
-            # Create ONE single combined entry
-            combined_content = re.sub(r'\s+', ' ', ' '.join(all_material_contents)).strip()
-            logger.info(f"🔥 CREATING ONE COMBINED MATERIAL ENTRY: '{combined_content}'")
-            
-            material_entries.append({
-                'text': combined_content,
-                'nominal_value': '',
-                'upper_tolerance': '',
-                'lower_tolerance': '',
-                'dimension_type': 'Material',
-                'bbox': all_material_boxes[0]  # Use first box as position
-            })
-            
-            # Add to dimension results
-            all_dimension_results.extend(material_entries)
-            logger.info(f"✅ SUCCESS: Created exactly ONE material entry: '{combined_content}'")
-        else:
-            logger.info("No material or EN texts found to combine")
-        
+            text_content = (text_item.get("text", "") or text_item.get("content", "")).strip()
+            if not text_content or text_content in used_text_contents:
+                continue
+            low = text_content.lower()
+            if "material" in low or re.match(
+                r"^(en[a-z0-9]+|ms|ss|gi|ci)\b", text_content, re.IGNORECASE
+            ):
+                continue
+            unused_texts.append(
+                {
+                    "content": text_content,
+                    "box": text_item.get("box", text_item.get("bbox", [])),
+                }
+            )
+
         note_detections = []
         for t in unused_texts:
             c = (t.get("content") or "").strip()
@@ -1130,7 +1219,7 @@ async def process_dimensions(request: ProcessDimensionsRequest, db: Session = De
             "count": len(all_dimension_results),
             "text_dimensions": len(filtered_dimension_results),
             "gdt_dimensions": len(gdt_dimension_results),
-            "material_dimensions": len(material_entries),
+            "material_dimensions": 0,
             "text_detections": text_results,
             "gdt_detections": gdt_results,
             "dimension_parsing": all_dimension_results,

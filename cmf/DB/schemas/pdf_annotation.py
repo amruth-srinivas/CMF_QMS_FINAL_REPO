@@ -50,7 +50,7 @@ class ProcessDimensionsRequest(BaseModel):
 
 class ExtractZonesBulkRequest(BaseModel):
     """Request to extract zones for multiple regions in one PDF load."""
-    part_id: int
+    part_id: Optional[int] = None
     pdf_id: Optional[str] = None
     bounding_boxes: List[BoundingBox]
     scale_factor: float = 1.0
