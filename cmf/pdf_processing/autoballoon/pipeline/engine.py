@@ -28,7 +28,7 @@ class OCREngine:
         det_thresh: float = 0.5,
         box_thresh: float = 0.5,
         conf_thresh: float = 0.85,
-        enable_mkldnn: bool = True,
+        enable_mkldnn: bool = False,
         cpu_threads: int  = None,
         gdt_conf_thresh: float = 0.70,  # lowered default (was 0.75)
     ):

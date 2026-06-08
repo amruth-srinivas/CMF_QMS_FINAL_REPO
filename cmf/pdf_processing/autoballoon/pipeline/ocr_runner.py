@@ -7,6 +7,12 @@ No functional changes vs v1; DPI parameter forwarded to image_loader separately.
 """
 
 import os
+
+# OneDNN + PIR on Windows/Paddle 3.x can raise NotImplementedError during predict().
+# Disable before importing paddle/paddleocr (see backend note extraction).
+os.environ.setdefault("FLAGS_use_mkldnn", "0")
+os.environ.setdefault("FLAGS_enable_mkldnn", "0")
+
 import numpy as np
 from paddleocr import PaddleOCR
 
@@ -19,7 +25,7 @@ class OCRRunner:
         lang: str       = "en",
         det_thresh: float = 0.5,
         box_thresh: float = 0.5,
-        enable_mkldnn: bool = True,
+        enable_mkldnn: bool = False,
         cpu_threads: int  = None,
         models_dir: str   = None,
     ):
@@ -54,22 +60,22 @@ class OCRRunner:
 
     def run(self, image: np.ndarray):
         """Run OCR inference on a preprocessed image."""
-        try:
-            return self.ocr.predict(image)
-        except Exception as e:
-            try:
-                return self.ocr.ocr(image, cls=True)
-            except Exception:
-                raise e
+        return self.ocr.predict(image)
 
     @staticmethod
     def parse_results(result) -> list:
         """Simplify the raw nested PaddleOCR output into a clean detection list."""
         ocr_results = []
-        if not result or not result[0]:
+        if not result:
             return ocr_results
 
-        first_page = result[0]
+        pages = result if isinstance(result, list) else [result]
+        if not pages:
+            return ocr_results
+
+        first_page = pages[0]
+        if not first_page:
+            return ocr_results
 
         # PaddleX OCRResult dict-like object
         if (

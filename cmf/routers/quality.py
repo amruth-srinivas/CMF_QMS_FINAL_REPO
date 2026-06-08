@@ -2,6 +2,7 @@
 Quality schema API: Master BOC (bill of characteristics) persistence aligned with DB.models.quality.MasterBoc.
 """
 import json
+from datetime import datetime, timezone
 
 # pyrefly: ignore [missing-import]
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -221,6 +222,23 @@ def upsert_inspection_plan_status(body: InspectionPlanStatusUpsert, db: Session 
     if st == "confirmed":
         raw_name = (body.confirmed_by_username or "").strip()
         row.confirmed_by_username = raw_name[:255] if raw_name else None
+        ack_name = raw_name or "Supervisor"
+        now = datetime.now(timezone.utc)
+        pending_plan_notifs = (
+            db.query(InspectionPlanNotification)
+            .filter(
+                InspectionPlanNotification.order_id == body.sales_order_id,
+                InspectionPlanNotification.part_number == pn,
+                InspectionPlanNotification.op_no == body.op_no,
+                InspectionPlanNotification.category == "plan_request",
+                InspectionPlanNotification.is_ack.is_(False),
+            )
+            .all()
+        )
+        for notif in pending_plan_notifs:
+            notif.is_ack = True
+            notif.ack_by = ack_name[:255]
+            notif.ack_at = now
     else:
         row.confirmed_by_username = None
 
@@ -521,7 +539,7 @@ def ensure_stage_inspection_rows(
             measurements=[],
             measured_mean="",
             measured_instrument=inst,
-            used_inst=inst,
+            used_inst="",
             op_no=m.op_no,
             quantity_no=quantity_no,
             bbox=bbox,
@@ -590,8 +608,21 @@ def create_note(body: NoteCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/notes/part/{part_id}", response_model=List[NoteResponse])
-def get_notes_by_part(part_id: int, db: Session = Depends(get_db)):
-    return db.query(Note).filter(Note.part_id == part_id).order_by(Note.id.asc()).all()
+def get_notes_by_part(
+    part_id: int,
+    document_id: Optional[int] = Query(None),
+    op_no: Optional[int] = Query(None),
+    is_operation_document: Optional[bool] = Query(None),
+    db: Session = Depends(get_db),
+):
+    q = db.query(Note).filter(Note.part_id == part_id)
+    if document_id is not None:
+        q = q.filter(Note.document_id == document_id)
+    if op_no is not None:
+        q = q.filter(Note.op_no == op_no)
+    if is_operation_document is not None:
+        q = q.filter(Note.is_operation_document == is_operation_document)
+    return q.order_by(Note.id.asc()).all()
 
 
 @router.put("/notes/{note_id}", response_model=NoteResponse)
@@ -617,7 +648,20 @@ def delete_note(note_id: int, db: Session = Depends(get_db)):
 
 
 @router.delete("/notes/part/{part_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_notes_for_part(part_id: int, db: Session = Depends(get_db)):
-    db.query(Note).filter(Note.part_id == part_id).delete()
+def delete_notes_for_part(
+    part_id: int,
+    document_id: Optional[int] = Query(None),
+    op_no: Optional[int] = Query(None),
+    is_operation_document: Optional[bool] = Query(None),
+    db: Session = Depends(get_db),
+):
+    q = db.query(Note).filter(Note.part_id == part_id)
+    if document_id is not None:
+        q = q.filter(Note.document_id == document_id)
+    if op_no is not None:
+        q = q.filter(Note.op_no == op_no)
+    if is_operation_document is not None:
+        q = q.filter(Note.is_operation_document == is_operation_document)
+    q.delete()
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)

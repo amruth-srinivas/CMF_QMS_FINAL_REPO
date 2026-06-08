@@ -1,4 +1,0 @@
-"""
-QMS utilities package.
-"""
-

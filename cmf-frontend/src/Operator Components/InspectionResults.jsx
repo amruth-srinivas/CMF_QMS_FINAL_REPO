@@ -12,12 +12,57 @@ import {
 } from '@ant-design/icons';
 import axios from 'axios';
 import { QUALITY_API_BASE_URL } from '../Config/qualityconfig';
+import InteractiveDrawing from '../Quality Management Components/InspectorComponents/InteractiveDrawing';
+import { parseMasterBocBboxToPdfRect } from '../Quality Management Components/InspectorComponents/bocMappers';
 
 const { Title, Text } = Typography;
 
 const FONT_STACK = '"JetBrains Mono", "JetBrains Mono NL", ui-monospace, "Cascadia Code", "Consolas", monospace';
 
 const monoStyle = { fontFamily: FONT_STACK };
+
+/** Matches new "Balloon document" uploads and legacy BALOON / typo baloon. */
+function isBalloonOperationDocument(d) {
+  if (!d) return false;
+  const t = String(d.document_type || '').trim().toLowerCase();
+  return t === 'baloon' || t === 'balloon' || t.includes('balloon');
+}
+
+function getDrawingInfoFromDocs(docs) {
+  const isDrawing = (d) => {
+    if (!d) return false;
+    if (isBalloonOperationDocument(d)) return false;
+    const type = (d.document_type || '').toLowerCase();
+    const name = (d.document_name || '').toLowerCase();
+    const url = (d.document_url || '').toLowerCase();
+    const isPdfFile = url.endsWith('.pdf') || type.includes('pdf');
+    return (
+      type.includes('2d') ||
+      type.includes('drawing') ||
+      name.includes('drawing') ||
+      isPdfFile ||
+      url.endsWith('.png') ||
+      url.endsWith('.jpg') ||
+      url.endsWith('.jpeg')
+    );
+  };
+
+  const nonBalloonDocs = (docs || []).filter((d) => !isBalloonOperationDocument(d));
+  const previewDrawing = nonBalloonDocs.find(isDrawing) || nonBalloonDocs[0] || (docs || [])[0];
+
+  if (!previewDrawing) return { url: null, isPdf: false, name: '', apiDocumentId: null };
+
+  const isPdf =
+    (previewDrawing.document_url || '').toLowerCase().endsWith('.pdf') ||
+    (previewDrawing.document_type || '').toLowerCase().includes('pdf');
+
+  return {
+    url: `${QUALITY_API_BASE_URL}/operation-documents/${previewDrawing.id}/preview`,
+    isPdf,
+    name: previewDrawing.document_name,
+    apiDocumentId: previewDrawing.id,
+  };
+}
 
 const fmtTol = (value) => {
   const n = Number(value);
@@ -84,12 +129,28 @@ const InspectionResults = () => {
   const [planTableRows, setPlanTableRows] = useState([]);
   const [planDrawingUrl, setPlanDrawingUrl] = useState('');
   const [planDrawingIsPdf, setPlanDrawingIsPdf] = useState(true);
+  const [planDrawingFileName, setPlanDrawingFileName] = useState('');
+  const [planBalloonDocumentId, setPlanBalloonDocumentId] = useState(null);
+  const [activeBalloonId, setActiveBalloonId] = useState(null);
   const [planViewMeta, setPlanViewMeta] = useState(null);
 
-  const pdfEmbedSrcForReview = (url) => {
-    if (!url) return '';
-    return `${url}${url.includes('?') ? '&' : '?'}toolbar=1&navpanes=1&scrollbar=1&view=FitH`;
-  };
+  const planInteractiveBalloons = useMemo(() => {
+    return (planTableRows || [])
+      .map((r, idx) => {
+        const rect = parseMasterBocBboxToPdfRect(r.bbox);
+        if (!rect) return null;
+        return {
+          id: String(r.id),
+          label: String(idx + 1),
+          x: rect.x,
+          y: rect.y,
+          width: rect.width,
+          height: rect.height,
+          page: rect.page || 1,
+        };
+      })
+      .filter(Boolean);
+  }, [planTableRows]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -150,26 +211,54 @@ const InspectionResults = () => {
     setPlanViewOpen(true);
     setPlanViewLoading(true);
     setPlanTableRows([]);
-    if (op.preview_document_id != null && op.preview_endpoint) {
-      const drawUrl = `${QUALITY_API_BASE_URL}/${op.preview_endpoint}/${op.preview_document_id}/preview`;
-      setPlanDrawingUrl(drawUrl);
-      const name = (op.preview_document_name || '').toLowerCase();
-      setPlanDrawingIsPdf(name.endsWith('.pdf') || name.includes('pdf'));
-    } else {
-      setPlanDrawingUrl('');
-      setPlanDrawingIsPdf(true);
-    }
+    setPlanDrawingUrl('');
+    setPlanDrawingFileName('');
+    setPlanBalloonDocumentId(null);
+    setActiveBalloonId(null);
 
     const opNo = Number(op.operation_number);
     try {
-      const res = await axios.get(`${QUALITY_API_BASE_URL}/quality/master-boc`, {
-        params: {
-          part_id: op.part_number,
-          sales_order_id: Number(op.order_id),
-          op_no: Number.isFinite(opNo) ? opNo : undefined,
-        },
-      });
-      setPlanTableRows(Array.isArray(res.data) ? res.data : []);
+      const requests = [
+        axios.get(`${QUALITY_API_BASE_URL}/quality/master-boc`, {
+          params: {
+            part_id: op.part_number,
+            sales_order_id: Number(op.order_id),
+            op_no: Number.isFinite(opNo) ? opNo : undefined,
+          },
+        }),
+      ];
+      if (op.operation_id) {
+        requests.unshift(
+          axios.get(`${QUALITY_API_BASE_URL}/operation-documents/operation/${op.operation_id}`),
+        );
+      }
+
+      const results = await Promise.all(requests);
+      let docs = [];
+      let bocRes;
+      if (op.operation_id) {
+        docs = Array.isArray(results[0].data) ? results[0].data : [];
+        bocRes = results[1];
+      } else {
+        bocRes = results[0];
+      }
+
+      const { url, isPdf, name, apiDocumentId } = getDrawingInfoFromDocs(docs);
+      if (url && apiDocumentId) {
+        setPlanDrawingUrl(url);
+        setPlanDrawingIsPdf(isPdf);
+        setPlanDrawingFileName(name || '');
+        setPlanBalloonDocumentId(apiDocumentId);
+      } else if (op.preview_document_id != null && op.preview_endpoint) {
+        const drawUrl = `${QUALITY_API_BASE_URL}/${op.preview_endpoint}/${op.preview_document_id}/preview`;
+        const docName = (op.preview_document_name || '').toLowerCase();
+        setPlanDrawingUrl(drawUrl);
+        setPlanDrawingIsPdf(docName.endsWith('.pdf') || docName.includes('pdf'));
+        setPlanDrawingFileName(op.preview_document_name || '');
+        setPlanBalloonDocumentId(op.preview_document_id);
+      }
+
+      setPlanTableRows(Array.isArray(bocRes.data) ? bocRes.data : []);
     } catch (err) {
       console.error(err);
       const detail = err.response?.data?.detail;
@@ -181,11 +270,15 @@ const InspectionResults = () => {
 
   const handleDownloadPlanDrawing = () => {
     if (!planDrawingUrl) return;
+    const id =
+      planBalloonDocumentId ??
+      planDrawingUrl.match(/operation-documents\/(\d+)\//)?.[1];
+    if (!id) return;
     const a = document.createElement('a');
-    a.href = planDrawingUrl;
+    a.href = `${QUALITY_API_BASE_URL}/operation-documents/${id}/download`;
     a.target = '_blank';
     a.rel = 'noopener noreferrer';
-    a.download = `operation_${planViewMeta?.opNo || 'plan'}_balloon.pdf`;
+    a.download = planDrawingFileName || `operation_${planViewMeta?.opNo || 'plan'}_balloon.pdf`;
     a.click();
   };
 
@@ -507,6 +600,27 @@ const InspectionResults = () => {
                   { title: 'Nominal', dataIndex: 'nominal', key: 'nominal', width: 130, render: (v) => <Text style={{ ...monoStyle, color: '#1f2937', fontSize: 13 }}>{v ?? '—'}</Text> },
                   { title: 'Upper Tol', dataIndex: 'uppertol', key: 'uppertol', width: 130, render: (v) => <Text style={{ ...monoStyle, color: Number(v) > 0 ? '#15803d' : '#6b7280', fontSize: 13 }}>{fmtTol(v)}</Text> },
                   { title: 'Lower Tol', dataIndex: 'lowertol', key: 'lowertol', width: 130, render: (v) => <Text style={{ ...monoStyle, color: Number(v) < 0 ? '#b91c1c' : '#6b7280', fontSize: 13 }}>{fmtTol(v)}</Text> },
+                  {
+                    title: 'Instrument',
+                    dataIndex: 'measured_instrument',
+                    key: 'measured_instrument',
+                    width: 160,
+                    render: (v) => {
+                      const label = (v || '').trim() || 'default';
+                      return (
+                        <Text
+                          style={{
+                            ...monoStyle,
+                            fontSize: 13,
+                            color: label === 'default' ? '#94a3b8' : '#334155',
+                          }}
+                          ellipsis={{ tooltip: label }}
+                        >
+                          {label}
+                        </Text>
+                      );
+                    },
+                  },
                 ]}
               />
             </div>
@@ -518,23 +632,19 @@ const InspectionResults = () => {
                 Download Drawing
               </Button>
             </div>
-            <div style={{ flex: 1, minHeight: 0, padding: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f8fafc' }}>
+            <div style={{ flex: 1, minHeight: 0, padding: 10, display: 'flex', flexDirection: 'column', background: '#f8fafc' }}>
               {planViewLoading ? (
                 <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Spin /></div>
-              ) : planDrawingUrl ? (
-                planDrawingIsPdf ? (
-                  <iframe
-                    title="Balloon document"
-                    src={pdfEmbedSrcForReview(planDrawingUrl)}
-                    style={{ width: '100%', minHeight: 480, height: 'min(72vh, 900px)', border: '1px solid #e5e7eb', borderRadius: 10, background: '#fff', boxShadow: '0 2px 10px rgba(15,23,42,0.08)' }}
-                  />
-                ) : (
-                  <img
-                    src={planDrawingUrl}
-                    alt="Ballooned drawing"
-                    style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', border: '1px solid #e5e7eb', borderRadius: 10, background: '#fff', boxShadow: '0 2px 10px rgba(15,23,42,0.08)' }}
-                  />
-                )
+              ) : planDrawingUrl && planBalloonDocumentId ? (
+                <InteractiveDrawing
+                  pdfId={planBalloonDocumentId}
+                  directImageSrc={!planDrawingIsPdf ? planDrawingUrl : null}
+                  pageNumber={1}
+                  balloons={planInteractiveBalloons}
+                  activeBalloonId={activeBalloonId}
+                  onBalloonClick={(b) => setActiveBalloonId(b.id)}
+                  balloonColor="blue"
+                />
               ) : (
                 <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                   <Empty description="No balloon document found for this operation" />

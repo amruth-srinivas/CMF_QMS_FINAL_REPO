@@ -71,6 +71,7 @@ class StageInspectionUpdate(BaseModel):
     measurements: Optional[List[str]] = None
     measured_mean: Optional[str] = None
     measured_instrument: Optional[str] = None
+    used_inst: Optional[str] = None
     is_done: Optional[bool] = None
 
 
@@ -137,6 +138,8 @@ class InspectionPlanStatusResponse(BaseModel):
 class NoteBase(BaseModel):
     part_id: int
     document_id: Optional[int] = None
+    op_no: int = 0
+    is_operation_document: bool = False
     x: Optional[float] = None
     y: Optional[float] = None
     width: Optional[float] = None
@@ -152,6 +155,8 @@ class NoteCreate(NoteBase):
 class NoteUpdate(BaseModel):
     part_id: Optional[int] = None
     document_id: Optional[int] = None
+    op_no: Optional[int] = None
+    is_operation_document: Optional[bool] = None
     x: Optional[float] = None
     y: Optional[float] = None
     width: Optional[float] = None

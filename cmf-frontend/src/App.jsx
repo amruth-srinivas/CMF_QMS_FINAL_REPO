@@ -569,8 +569,6 @@ function App() {
 
           <Route path="/operator/dashboard" element={<OperatorDashboard />} />
 
-          <Route path="/operator/qms-inspector" element={<QMSInspector />} />
-
           <Route path="/operator/inspection-results" element={<OperatorDashboard />} />
 
 

@@ -60,6 +60,14 @@ const InspectionPlanNotifications = ({ dateRange, onCount }) => {
     fetchNotifications();
   }, [fetchNotifications]);
 
+  useEffect(() => {
+    const refresh = () => {
+      void fetchNotifications();
+    };
+    window.addEventListener('focus', refresh);
+    return () => window.removeEventListener('focus', refresh);
+  }, [fetchNotifications]);
+
   const { planRequests, ftpRequests } = useMemo(() => {
     let rows = notifications;
     const q = query.trim().toLowerCase();
@@ -169,6 +177,7 @@ const InspectionPlanNotifications = ({ dateRange, onCount }) => {
         mode: 'PLAN'
       });
       if (drawing?.id) qs.set('documentId', String(drawing.id));
+      if (record.operation_id) qs.set('operationId', String(record.operation_id));
 
       const path = window.location.pathname.startsWith('/supervisor') ? '/supervisor/qms-inspector' : '/admin/qms-inspector';
       navigate(`${path}?${qs.toString()}`);
@@ -502,19 +511,17 @@ const InspectionPlanNotifications = ({ dateRange, onCount }) => {
     {
       title: 'Actions',
       key: 'actions',
-      width: 250,
-      render: (_, record) => (
-        <Space wrap>
-          {!record.is_ack && (
-            <Button type="primary" icon={<CheckCircleOutlined />} onClick={() => handleAcknowledge(record.id)}>
-              Acknowledge
-            </Button>
-          )}
+      width: 180,
+      render: (_, record) =>
+        record.is_ack ? (
+          <Button icon={<EyeOutlined />} onClick={() => handleOpenQmsSoftware(record)}>
+            Review
+          </Button>
+        ) : (
           <Button icon={<AppstoreOutlined />} onClick={() => handleOpenQmsSoftware(record)}>
             Open QMS Software
           </Button>
-        </Space>
-      ),
+        ),
     },
   ];
 

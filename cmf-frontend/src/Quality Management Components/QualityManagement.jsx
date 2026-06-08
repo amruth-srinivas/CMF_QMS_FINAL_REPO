@@ -27,6 +27,141 @@ function pdfEmbedSrcForReview(url) {
   return `${base}#toolbar=0&navpanes=0&pagemode=none`;
 }
 
+const NOMINAL_MATCH_EPS = 0.005;
+
+/** within = GO, out = NO GO, pending = awaiting readings */
+function computeInspectionStatus(nominal, upper, lower, mean) {
+  if (mean == null || nominal == null) return 'pending';
+  const hasTolerance = Math.abs(upper || 0) > 1e-12 || Math.abs(lower || 0) > 1e-12;
+  if (hasTolerance) {
+    const hi = nominal + (upper || 0);
+    const lo = nominal + (lower || 0);
+    return mean <= hi && mean >= lo ? 'within' : 'out';
+  }
+  return Math.abs(mean - nominal) < NOMINAL_MATCH_EPS ? 'within' : 'out';
+}
+
+function inspectionMeasureRowClass(status) {
+  if (status === 'within') return 'qm-measure-row-go';
+  if (status === 'out') return 'qm-measure-row-nogo';
+  return '';
+}
+
+function renderInspectionGoNoGoTag(status) {
+  if (status === 'within') {
+    return (
+      <Tag style={{
+        margin: 0,
+        borderRadius: 6,
+        fontWeight: 700,
+        fontSize: 11,
+        letterSpacing: '0.06em',
+        border: '1px solid #86efac',
+        background: '#ecfdf5',
+        color: '#047857',
+        minWidth: 58,
+        textAlign: 'center',
+      }}
+      >
+        GO
+      </Tag>
+    );
+  }
+  if (status === 'out') {
+    return (
+      <Tag style={{
+        margin: 0,
+        borderRadius: 6,
+        fontWeight: 700,
+        fontSize: 11,
+        letterSpacing: '0.06em',
+        border: '1px solid #fca5a5',
+        background: '#fef2f2',
+        color: '#b91c1c',
+        minWidth: 58,
+        textAlign: 'center',
+      }}
+      >
+        NO GO
+      </Tag>
+    );
+  }
+  return (
+    <Tag style={{
+      margin: 0,
+      borderRadius: 6,
+      fontWeight: 600,
+      fontSize: 11,
+      border: '1px solid #e2e8f0',
+      background: '#f8fafc',
+      color: '#64748b',
+      minWidth: 58,
+      textAlign: 'center',
+    }}
+    >
+      Pending
+    </Tag>
+  );
+}
+
+function renderInspectionActualCell(record, display) {
+  const mono = { fontFamily: '"JetBrains Mono", "Consolas", monospace', fontSize: 12 };
+  if (record._status === 'within') return <Text strong style={{ ...mono, color: '#047857' }}>{display}</Text>;
+  if (record._status === 'out') return <Text strong style={{ ...mono, color: '#b91c1c' }}>{display}</Text>;
+  return <Text style={{ ...mono, color: '#64748b' }}>{display}</Text>;
+}
+
+function renderInspectionSummaryBar(summary) {
+  return (
+    <div style={{
+      padding: '10px 14px',
+      borderBottom: '1px solid #e2e8f0',
+      background: 'linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%)',
+      display: 'flex',
+      gap: 8,
+      alignItems: 'center',
+      flexWrap: 'wrap',
+    }}
+    >
+      <Tag style={{ margin: 0, borderRadius: 8, fontWeight: 600, background: '#fff', border: '1px solid #cbd5e1', color: '#334155' }}>
+        Total: {summary.total}
+      </Tag>
+      <Tag style={{ margin: 0, borderRadius: 8, fontWeight: 700, background: '#ecfdf5', border: '1px solid #86efac', color: '#047857' }}>
+        GO: {summary.go}
+      </Tag>
+      <Tag style={{ margin: 0, borderRadius: 8, fontWeight: 700, background: '#fef2f2', border: '1px solid #fca5a5', color: '#b91c1c' }}>
+        NO GO: {summary.nogo}
+      </Tag>
+      <Tag style={{ margin: 0, borderRadius: 8, fontWeight: 600, background: '#fff', border: '1px solid #cbd5e1', color: '#64748b' }}>
+        Pending: {summary.pending}
+      </Tag>
+      <Tag style={{ margin: 0, borderRadius: 8, fontWeight: 700, background: '#eff6ff', border: '1px solid #93c5fd', color: '#1d4ed8' }}>
+        Pass Rate: {summary.passRate}%
+      </Tag>
+    </div>
+  );
+}
+
+const QM_MEASURE_TABLE_ROW_STYLES = `
+  .qm-measure-data-table .qm-measure-row-go > td {
+    background-color: #f0fdf4 !important;
+  }
+  .qm-measure-data-table .qm-measure-row-nogo > td {
+    background-color: #fef2f2 !important;
+  }
+  .qm-measure-data-table .ant-table-thead > tr > th {
+    background: #f1f5f9 !important;
+    font-weight: 700 !important;
+    font-size: 11px !important;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: #475569 !important;
+  }
+  .qm-measure-data-table .ant-table-tbody > tr > td {
+    font-size: 12px;
+  }
+`;
+
 const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
   const navigate = useNavigate();
   const location = useLocation();
@@ -135,6 +270,7 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
   const [reportQtyOptions, setReportQtyOptions] = useState([]);
   const [reportContext, setReportContext] = useState(null);
   const [reportLoading, setReportLoading] = useState(false);
+  const [autoDownloadReport, setAutoDownloadReport] = useState(false);
   const [measurePartMode, setMeasurePartMode] = useState(false);
   const [measurePartOps, setMeasurePartOps] = useState([]);
 
@@ -690,6 +826,13 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
   };
 
   useEffect(() => {
+    if (!autoDownloadReport) return;
+    if (!reportPrintData) return;
+    void handleExportExcel();
+    setAutoDownloadReport(false);
+  }, [autoDownloadReport, reportPrintData]);
+
+  useEffect(() => {
     const oid = effectiveOrderId;
     if (oid && String(oid) !== 'null') {
       const checkOrderStatus = async () => {
@@ -1014,6 +1157,17 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
     return Number.isFinite(m) ? m : null;
   };
 
+  const decorateInspectionRow = (row) => {
+    const nominal = parseNum(row.nominal_value);
+    const upper = parseNum(row.uppertol);
+    const lower = parseNum(row.lowertol);
+    const mean = computeMeanFromMeasurements(row);
+    const upperLimit = nominal != null && upper != null ? nominal + upper : null;
+    const lowerLimit = nominal != null && lower != null ? nominal + lower : null;
+    const status = computeInspectionStatus(nominal, upper, lower, mean);
+    return { ...row, _upperLimit: upperLimit, _lowerLimit: lowerLimit, _computedMean: mean, _status: status };
+  };
+
   const fmt2 = (value) => {
     const n = parseNum(value);
     return n == null ? '—' : n.toFixed(2);
@@ -1042,84 +1196,32 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
           dimension_type: m.dimension_type,
           id: `missing-${m.id}` // Temporary ID for Table rowKey
         };
-        
-        const nominal = parseNum(row.nominal_value);
-        const upper = parseNum(row.uppertol);
-        const lower = parseNum(row.lowertol);
-        const mean = computeMeanFromMeasurements(row);
-        const upperLimit = nominal != null && upper != null ? nominal + upper : null;
-        const lowerLimit = nominal != null && lower != null ? nominal + lower : null;
-        const hasTolerance = Math.abs(upper || 0) > 1e-12 || Math.abs(lower || 0) > 1e-12;
-        const withinTolerance =
-          hasTolerance &&
-          mean != null &&
-          upperLimit != null &&
-          lowerLimit != null &&
-          mean <= upperLimit &&
-          mean >= lowerLimit;
-        const outOfTolerance = hasTolerance && mean != null && !withinTolerance;
-        const status = !hasTolerance ? 'no_tolerance' : withinTolerance ? 'within' : outOfTolerance ? 'out' : 'pending';
-        return { ...row, _upperLimit: upperLimit, _lowerLimit: lowerLimit, _computedMean: mean, _status: status };
+
+        return decorateInspectionRow(row);
       });
     }
 
     // 2. Fallback to mapping measureRows directly (Consolidated or Part Overview)
-    return (measureRows || []).map((r) => {
-      const nominal = parseNum(r.nominal_value);
-      const upper = parseNum(r.uppertol);
-      const lower = parseNum(r.lowertol);
-      const mean = computeMeanFromMeasurements(r);
-      const upperLimit = nominal != null && upper != null ? nominal + upper : null;
-      const lowerLimit = nominal != null && lower != null ? nominal + lower : null;
-      const hasTolerance = Math.abs(upper || 0) > 1e-12 || Math.abs(lower || 0) > 1e-12;
-      const withinTolerance =
-        hasTolerance &&
-        mean != null &&
-        upperLimit != null &&
-        lowerLimit != null &&
-        mean <= upperLimit &&
-        mean >= lowerLimit;
-      const outOfTolerance = hasTolerance && mean != null && !withinTolerance;
-      const status = !hasTolerance ? 'no_tolerance' : withinTolerance ? 'within' : outOfTolerance ? 'out' : 'pending';
-      return { ...r, _upperLimit: upperLimit, _lowerLimit: lowerLimit, _computedMean: mean, _status: status };
-    });
+    return (measureRows || []).map((r) => decorateInspectionRow(r));
   }, [measureRows, measureMasterRows, measurePartMode, measureQty]);
 
-  /** Every BOC row for the selected quantity has #1–#3 empty — no real measurements yet. */
+  /** Every displayed row has no #1–#3 readings — show a single empty state instead of the table. */
   const measureAllReadingsEmpty = useMemo(() => {
-    if (!measureRows?.length) return false;
-    return measureRows.every((r) => !rowHasMeasured123(r));
-  }, [measureRows]);
+    if (!measureDecoratedRows?.length) return false;
+    return measureDecoratedRows.every((r) => !rowHasMeasured123(r));
+  }, [measureDecoratedRows]);
 
   const measureSummary = useMemo(() => {
     const total = measureDecoratedRows.length;
-    const within = measureDecoratedRows.filter((r) => r._status === 'within').length;
-    const out = measureDecoratedRows.filter((r) => r._status === 'out').length;
-    const noTol = measureDecoratedRows.filter((r) => r._status === 'no_tolerance').length;
-    const passRate = total ? ((within / total) * 100).toFixed(1) : '0.0';
-    return { total, within, out, noTol, passRate };
+    const go = measureDecoratedRows.filter((r) => r._status === 'within').length;
+    const nogo = measureDecoratedRows.filter((r) => r._status === 'out').length;
+    const pending = measureDecoratedRows.filter((r) => r._status === 'pending').length;
+    const passRate = total ? ((go / total) * 100).toFixed(1) : '0.0';
+    return { total, go, nogo, pending, passRate };
   }, [measureDecoratedRows]);
 
   const ftpApproveDecoratedRows = useMemo(() => {
-    return (ftpApproveRows || []).map((r) => {
-      const nominal = parseNum(r.nominal_value);
-      const upper = parseNum(r.uppertol);
-      const lower = parseNum(r.lowertol);
-      const mean = computeMeanFromMeasurements(r);
-      const upperLimit = nominal != null && upper != null ? nominal + upper : null;
-      const lowerLimit = nominal != null && lower != null ? nominal + lower : null;
-      const hasTolerance = Math.abs(upper || 0) > 1e-12 || Math.abs(lower || 0) > 1e-12;
-      const withinTolerance =
-        hasTolerance &&
-        mean != null &&
-        upperLimit != null &&
-        lowerLimit != null &&
-        mean <= upperLimit &&
-        mean >= lowerLimit;
-      const outOfTolerance = hasTolerance && mean != null && !withinTolerance;
-      const status = !hasTolerance ? 'no_tolerance' : withinTolerance ? 'within' : outOfTolerance ? 'out' : 'pending';
-      return { ...r, _upperLimit: upperLimit, _lowerLimit: lowerLimit, _computedMean: mean, _status: status };
-    });
+    return (ftpApproveRows || []).map((r) => decorateInspectionRow(r));
   }, [ftpApproveRows]);
 
   const ftpApproveAllReadingsEmpty = useMemo(() => {
@@ -1139,11 +1241,11 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
 
   const ftpApproveSummary = useMemo(() => {
     const total = ftpApproveDecoratedRows.length;
-    const within = ftpApproveDecoratedRows.filter((r) => r._status === 'within').length;
-    const out = ftpApproveDecoratedRows.filter((r) => r._status === 'out').length;
-    const noTol = ftpApproveDecoratedRows.filter((r) => r._status === 'no_tolerance').length;
-    const passRate = total ? ((within / total) * 100).toFixed(1) : '0.0';
-    return { total, within, out, noTol, passRate };
+    const go = ftpApproveDecoratedRows.filter((r) => r._status === 'within').length;
+    const nogo = ftpApproveDecoratedRows.filter((r) => r._status === 'out').length;
+    const pending = ftpApproveDecoratedRows.filter((r) => r._status === 'pending').length;
+    const passRate = total ? ((go / total) * 100).toFixed(1) : '0.0';
+    return { total, go, nogo, pending, passRate };
   }, [ftpApproveDecoratedRows]);
 
   const interactiveBalloons = useMemo(() => {
@@ -1666,6 +1768,21 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
     </Card>
   );
 
+  const partOperationKpis = useMemo(() => {
+    const total = operations?.length ?? 0;
+    if (!total) {
+      return { total: 0, confirmed: 0, pending: 0, completionPct: 0 };
+    }
+    let confirmed = 0;
+    for (const op of operations) {
+      const opNo = parseOpNo(op);
+      if (inspectionPlanByOp[opNo] === 'confirmed') confirmed += 1;
+    }
+    const pending = total - confirmed;
+    const completionPct = Math.round((confirmed / total) * 100);
+    return { total, confirmed, pending, completionPct };
+  }, [operations, inspectionPlanByOp]);
+
   if (isCheckingStatus) {
     return (
       <div style={{ height: 'calc(100vh - 180px)', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#fff' }}>
@@ -1761,48 +1878,63 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
         }}>
           {selectedItem ? (
             <div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '12px' }}>
-                <Title level={3} style={{ margin: 0 }}>
-                  {selectedItem.itemType === 'product' ? selectedItem.product_name : 
-                   selectedItem.itemType === 'assembly' ? selectedItem.assembly_name : 
-                   selectedItem.part_name}
-                  {selectedItem.itemType === 'part' && (
-                    <Space size={0}>
-                      <Button 
-                        type="link" 
-                        icon={<EyeOutlined />} 
-                        onClick={handlePreviewPart}
-                        style={{ marginLeft: '12px' }}
-                      >
-                        View Part Drawing
-                      </Button>
-                      <Button 
-                        type="link" 
-                        icon={<CheckCircleOutlined />} 
-                        onClick={() => handleOpenPartInspection()}
-                      >
-                        Part Inspection
-                      </Button>
-                      <Button 
-                        type="link" 
-                        icon={<AppstoreOutlined />} 
-                        onClick={() => handleOpenPartMeasurement()}
-                      >
-                        Part Measurement
-                      </Button>
-                      <Button 
-                        type="link" 
-                        icon={<CloudDownloadOutlined />} 
-                        onClick={() => handleOpenPartReport()}
-                      >
-                        Part Report
-                      </Button>
-                    </Space>
-                  )}
-                </Title>
-                <Space>
+              <div style={{ marginBottom: '16px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+                    <Title level={3} style={{ margin: 0 }}>
+                      {selectedItem.itemType === 'product' ? selectedItem.product_name :
+                       selectedItem.itemType === 'assembly' ? selectedItem.assembly_name :
+                       selectedItem.part_name}
+                    </Title>
+
+                    {selectedItem.itemType === 'part' && (
+                      <Space size={8} wrap>
+                        <Button size="small" type="default" icon={<EyeOutlined />} onClick={handlePreviewPart}>
+                          View Part Drawing
+                        </Button>
+                        <Button
+                          size="small"
+                          type="default"
+                          icon={<CheckCircleOutlined />}
+                          onClick={() => handleOpenPartInspection()}
+                          style={{ backgroundColor: '#f6ffed', borderColor: '#b7eb8f', color: '#389e0d', fontWeight: 600 }}
+                        >
+                          Final Inspection
+                        </Button>
+                        <Button
+                          size="small"
+                          type="default"
+                          icon={<AppstoreOutlined />}
+                          onClick={() => handleOpenPartMeasurement()}
+                          style={{ backgroundColor: '#ecfeff', borderColor: '#7dd3fc', color: '#08979c', fontWeight: 600 }}
+                        >
+                          Final Measurements
+                        </Button>
+                        <Button size="small" type="default" icon={<FilePdfOutlined />} onClick={() => handleOpenPartReport()}>
+                          Part Report
+                        </Button>
+                      </Space>
+                    )}
+                  </div>
                   <Tag color="blue">{selectedItem.itemType.toUpperCase()}</Tag>
-                </Space>
+                </div>
+
+                {selectedItem.itemType === 'part' && (
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
+                      gap: 12,
+                      marginTop: 14,
+                      marginBottom: 4,
+                    }}
+                  >
+                    <StatCard icon={<ToolOutlined />} label="Total Operations" value={partOperationKpis.total} color="#1890ff" />
+                    <StatCard icon={<CheckCircleOutlined />} label="Plan Confirmed" value={partOperationKpis.confirmed} color="#52c41a" />
+                    <StatCard icon={<BuildOutlined />} label="Pending" value={partOperationKpis.pending} color="#faad14" />
+                    <StatCard icon={<InfoCircleOutlined />} label="Completion" value={`${partOperationKpis.completionPct}%`} color="#722ed1" />
+                  </div>
+                )}
               </div>
 
               {selectedItem.itemType === 'product' && (
@@ -1829,7 +1961,38 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                         key: '1',
                         label: 'Inspection Details',
                         children: (
-                          <Table 
+                          <>
+                            <style>{`
+                              .qms-inspection-details-table .ant-table-thead > tr > th {
+                                background:rgb(247, 250, 253) !important;
+                              }
+                              .qms-inspection-details-table .ant-table-thead > tr > th {
+                                padding: 8px 10px !important;
+                                font-size: 12px !important;
+                                font-weight: 700 !important;
+                                color: #334155 !important;
+                                line-height: 1.1 !important;
+                              }
+                              /* Reduce extra height for grouped header rows (e.g. Actions -> 3 columns) */
+                              .qms-inspection-details-table .ant-table-thead > tr.ant-table-row-level-0 > th {
+                                padding-top: 6px !important;
+                                padding-bottom: 6px !important;
+                                font-size: 11px !important;
+                                text-transform: uppercase;
+                                letter-spacing: 0.04em;
+                              }
+                              .qms-inspection-details-table .ant-table-thead > tr.ant-table-row-level-1 > th {
+                                padding-top: 6px !important;
+                                padding-bottom: 6px !important;
+                                font-size: 12px !important;
+                                font-weight: 700 !important;
+                              }
+                              .qms-inspection-details-table .ant-table-tbody > tr > td {
+                                padding: 10px 10px !important;
+                              }
+                            `}</style>
+                            <Table
+                              className="qms-inspection-details-table"
                             loading={loadingDetails}
                             dataSource={operations}
                             rowKey="id"
@@ -1884,143 +2047,277 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                                 },
                               },
                               {
-                                title: 'Req qty',
-                                dataIndex: 'required_quantity',
-                                key: 'required_quantity',
-                                align: 'center'
-                              },
-                              {
-                                title: 'Comp qty',
-                                dataIndex: 'completed_quantity',
-                                key: 'completed_quantity',
-                                align: 'center'
-                              },
-                              {
-                                title: 'Acpt qty',
-                                dataIndex: 'accepted_quantity',
-                                key: 'accepted_quantity',
-                                align: 'center'
-                              },
-                              {
-                                title: 'Rej qty',
-                                dataIndex: 'rejected_quantity',
-                                key: 'rejected_quantity',
-                                align: 'center'
-                              },
-                              {
-                                title: 'Yield %',
-                                dataIndex: 'yield_percentage',
-                                key: 'yield_percentage',
-                                align: 'center',
-                                render: val => (
-                                  <Text style={{ color: val >= 95 ? '#52c41a' : val < 80 ? '#f5222d' : '#faad14', fontWeight: 'bold' }}>
-                                    {val ? `${val}%` : '0%'}
-                                  </Text>
-                                )
-                              },
-                              {
                                 title: 'Actions',
-                                key: 'actions',
+                                key: 'actions_group',
                                 fixed: 'right',
-                                render: (_, record) => {
-                                  const opNo = parseOpNo(record);
-                                  const st = inspectionPlanByOp[opNo];
-                                  const ftpStatus = ftpStatusByOp[opNo] || null;
-                                  const planLabel = st === 'confirmed' ? 'View Plan' : st === 'draft' ? 'Continue Plan' : 'Create Plan';
-                                  const PlanIcon = st === 'confirmed' ? EyeOutlined : BuildOutlined;
-                                  return (
-                                  <Space size="middle">
-                                    <Button 
-                                      size="small" 
-                                      type="primary" 
-                                      ghost 
-                                      icon={<PlanIcon />}
-                                      onClick={async () => {
-                                        if (st === 'confirmed') {
-                                          await openConfirmedPlanModal(record, opNo);
-                                          return;
-                                        }
-                                        const { url, isPdf, name, apiDocumentId } = getDrawingInfo(record);
-                                        const hierarchy = productHierarchies[selectedItem.productId];
-                                        const projectName = hierarchy?.product?.product_name || '';
-                                        const partName = selectedItem.part_name || '';
-                                        const opParts = [];
-                                        if (record.operation_number != null && record.operation_number !== '') opParts.push(String(record.operation_number));
-                                        if (record.operation_name) opParts.push(record.operation_name);
-                                        const opLabel = opParts.join(': ');
-                                        if (effectiveOrderId && String(effectiveOrderId) !== 'null' && selectedItem.part_number) {
-                                          if (st !== 'confirmed') {
-                                            try {
-                                              await axios.put(`${QUALITY_API_BASE_URL}/quality/inspection-plan-status`, {
-                                                part_number: selectedItem.part_number,
-                                                sales_order_id: Number(effectiveOrderId),
-                                                op_no: opNo,
-                                                status: 'draft',
-                                              });
-                                              setInspectionPlanByOp((prev) => ({ ...prev, [opNo]: 'draft' }));
-                                              setInspectionPlanConfirmedByOp((prev) => ({ ...prev, [opNo]: null }));
-                                            } catch (err) {
-                                              console.error(err);
-                                              const detail = err.response?.data?.detail;
-                                              message.error(typeof detail === 'string' ? detail : err.message || 'Could not start inspection plan');
+                                align: 'center',
+                                children: [
+                                  {
+                                    title: 'Inspection Plan',
+                                    key: 'action_plan',
+                                    width: 132,
+                                    align: 'center',
+                                    render: (_, record) => {
+                                      const opNo = parseOpNo(record);
+                                      const st = inspectionPlanByOp[opNo];
+                                      const planLabel = st === 'confirmed' ? 'View Plan' : st === 'draft' ? 'Continue Plan' : 'Create Plan';
+                                      const PlanIcon = st === 'confirmed' ? EyeOutlined : BuildOutlined;
+                                      return (
+                                        <Button
+                                          size="small"
+                                          type={st === 'confirmed' ? 'default' : 'primary'}
+                                          ghost={st !== 'confirmed'}
+                                          icon={<PlanIcon />}
+                                          style={st === 'confirmed' ? {
+                                            backgroundColor: '#e6f4ff',
+                                            borderColor: '#91caff',
+                                            color: '#0958d9',
+                                            fontWeight: 600,
+                                          } : { fontWeight: 600 }}
+                                          onClick={async () => {
+                                            if (st === 'confirmed') {
+                                              await openConfirmedPlanModal(record, opNo);
                                               return;
                                             }
-                                          }
-                                        }
-                                        const qs = new URLSearchParams({
-                                          drawingUrl: url || '',
-                                          isPdf: String(!!isPdf),
-                                          fileName: name || '',
-                                          projectName,
-                                          partName,
-                                          operationName: opLabel,
-                                          partId: String(selectedItem.id),
-                                          partNumber: selectedItem.part_number || '',
-                                          operationNumber: String(record.operation_number ?? ''),
-                                          operationId: String(record.id),
-                                        });
-                                        if (apiDocumentId != null) qs.set('documentId', String(apiDocumentId));
-                                        if (effectiveOrderId && String(effectiveOrderId) !== 'null') {
-                                          qs.set('orderId', String(effectiveOrderId));
-                                        }
-                                        navigate(`${qmsInspectorBase}?${qs.toString()}`);
-                                      }}
-                                    >
-                                      {planLabel}
-                                    </Button>
-                                    <Button 
-                                      size="small" 
-                                      icon={<CheckCircleOutlined />} 
-                                      style={{ color: '#52c41a', borderColor: '#52c41a' }}
-                                      onClick={() => openMeasurementsModal(record)}
-                                    >
-                                      Measurements
-                                    </Button>
-
-                                    <Button 
-                                      size="small" 
-                                      type="primary" 
-                                      ghost 
-                                      icon={<FilePdfOutlined />} 
-                                      onClick={() => handleGenerateReport(record)}
-                                    >
-                                      Generate Report
-                                    </Button>
-
-                                    <Button 
-                                      size="small" 
-                                      icon={<EyeOutlined />} 
-                                      onClick={() => handlePreviewOperation(record)}
-                                      title="View Drawing"
-                                    >
-                                      View Drawing
-                                    </Button>
-                                  </Space>
-                                  );
-                                },
+                                            const { url, isPdf, name, apiDocumentId } = getDrawingInfo(record);
+                                            const hierarchy = productHierarchies[selectedItem.productId];
+                                            const projectName = hierarchy?.product?.product_name || '';
+                                            const partName = selectedItem.part_name || '';
+                                            const opParts = [];
+                                            if (record.operation_number != null && record.operation_number !== '') opParts.push(String(record.operation_number));
+                                            if (record.operation_name) opParts.push(record.operation_name);
+                                            const opLabel = opParts.join(': ');
+                                            if (effectiveOrderId && String(effectiveOrderId) !== 'null' && selectedItem.part_number) {
+                                              if (st !== 'confirmed') {
+                                                try {
+                                                  await axios.put(`${QUALITY_API_BASE_URL}/quality/inspection-plan-status`, {
+                                                    part_number: selectedItem.part_number,
+                                                    sales_order_id: Number(effectiveOrderId),
+                                                    op_no: opNo,
+                                                    status: 'draft',
+                                                  });
+                                                  setInspectionPlanByOp((prev) => ({ ...prev, [opNo]: 'draft' }));
+                                                  setInspectionPlanConfirmedByOp((prev) => ({ ...prev, [opNo]: null }));
+                                                } catch (err) {
+                                                  console.error(err);
+                                                  const detail = err.response?.data?.detail;
+                                                  message.error(typeof detail === 'string' ? detail : err.message || 'Could not start inspection plan');
+                                                  return;
+                                                }
+                                              }
+                                            }
+                                            const qs = new URLSearchParams({
+                                              drawingUrl: url || '',
+                                              isPdf: String(!!isPdf),
+                                              fileName: name || '',
+                                              projectName,
+                                              partName,
+                                              operationName: opLabel,
+                                              partId: String(selectedItem.id),
+                                              partNumber: selectedItem.part_number || '',
+                                              operationNumber: String(record.operation_number ?? ''),
+                                              operationId: String(record.id),
+                                            });
+                                            if (apiDocumentId != null) qs.set('documentId', String(apiDocumentId));
+                                            if (effectiveOrderId && String(effectiveOrderId) !== 'null') {
+                                              qs.set('orderId', String(effectiveOrderId));
+                                            }
+                                            navigate(`${qmsInspectorBase}?${qs.toString()}`);
+                                          }}
+                                        >
+                                          {planLabel}
+                                        </Button>
+                                      );
+                                    },
+                                  },
+                                  {
+                                    title: 'Measurements',
+                                    key: 'action_measurements',
+                                    width: 120,
+                                    align: 'center',
+                                    render: (_, record) => (
+                                      <Button
+                                        size="small"
+                                        type="default"
+                                        icon={<CheckCircleOutlined />}
+                                        style={{ borderColor: '#86efac', color: '#047857', fontWeight: 600 }}
+                                        onClick={() => openMeasurementsModal(record)}
+                                      >
+                                        View Data
+                                      </Button>
+                                    ),
+                                  },
+                                  {
+                                    title: 'Drawing',
+                                    key: 'action_drawing',
+                                    width: 120,
+                                    align: 'center',
+                                    render: (_, record) => (
+                                      <Button
+                                        size="small"
+                                        icon={<EyeOutlined />}
+                                        onClick={() => handlePreviewOperation(record)}
+                                        title="View Drawing"
+                                      >
+                                        View Drawing
+                                      </Button>
+                                    ),
+                                  },
+                                ],
                               },
                             ]}
-                          />
+                            />
+                          </>
+                        ),
+                      },
+                      {
+                        key: '2',
+                        label: 'Inspection Reports',
+                        children: (
+                          <div style={{ marginTop: 6 }}>
+                            <style>{`
+                              .qms-inspection-reports-table .ant-table-thead > tr > th {
+                                background: rgb(247, 250, 253) !important;
+                                padding: 6px 8px !important;
+                                font-size: 12px !important;
+                                font-weight: 700 !important;
+                                color: #334155 !important;
+                                line-height: 1.1 !important;
+                              }
+                              .qms-inspection-reports-table .ant-table-tbody > tr > td {
+                                padding: 8px 8px !important;
+                                font-size: 13px !important;
+                              }
+                              .qms-inspection-reports-table .ant-table-cell {
+                                white-space: nowrap;
+                              }
+                            `}</style>
+                            <Table
+                              className="qms-inspection-reports-table"
+                              size="small"
+                              loading={loadingDetails}
+                              dataSource={operations}
+                              rowKey="id"
+                              pagination={false}
+                              tableLayout="fixed"
+                              columns={[
+                                {
+                                  title: 'Op #',
+                                  dataIndex: 'operation_number',
+                                  key: 'operation_number',
+                                  width: 56,
+                                  align: 'center',
+                                  render: val => <Text strong style={{ color: '#1890ff' }}>{val}</Text>,
+                                },
+                                {
+                                  title: 'Operation Name',
+                                  dataIndex: 'operation_name',
+                                  key: 'operation_name',
+                                  width: 140,
+                                  ellipsis: true,
+                                  render: val => <Text style={{ fontWeight: 500 }} ellipsis={{ tooltip: val }}>{val}</Text>,
+                                },
+                                {
+                                  title: 'Plan status',
+                                  key: 'inspection_plan_status',
+                                  width: 96,
+                                  align: 'center',
+                                  render: (_, record) => {
+                                    const opNo = parseOpNo(record);
+                                    const st = inspectionPlanByOp[opNo];
+                                    if (st === 'confirmed') {
+                                      return <Tag color="success" style={{ borderRadius: '12px', margin: 0 }}>Confirmed</Tag>;
+                                    }
+                                    if (st === 'draft') {
+                                      return <Tag color="processing" style={{ borderRadius: '12px', margin: 0 }}>Draft</Tag>;
+                                    }
+                                    return <Tag style={{ borderRadius: '12px', margin: 0 }}>—</Tag>;
+                                  },
+                                },
+                                {
+                                  title: 'Confirmed by',
+                                  key: 'inspection_plan_confirmed_by',
+                                  width: 100,
+                                  ellipsis: true,
+                                  render: (_, record) => {
+                                    const opNo = parseOpNo(record);
+                                    const st = inspectionPlanByOp[opNo];
+                                    const who = inspectionPlanConfirmedByOp[opNo];
+                                    if (st !== 'confirmed' || !who) return <Text type="secondary">—</Text>;
+                                    return <Text style={{ fontSize: 13 }} ellipsis={{ tooltip: who }}>{who}</Text>;
+                                  },
+                                },
+                                {
+                                  title: 'Req qty',
+                                  dataIndex: 'required_quantity',
+                                  key: 'required_quantity',
+                                  width: 68,
+                                  align: 'center',
+                                },
+                                {
+                                  title: 'Comp qty',
+                                  dataIndex: 'completed_quantity',
+                                  key: 'completed_quantity',
+                                  width: 68,
+                                  align: 'center',
+                                },
+                                {
+                                  title: 'Acpt qty',
+                                  dataIndex: 'accepted_quantity',
+                                  key: 'accepted_quantity',
+                                  width: 68,
+                                  align: 'center',
+                                },
+                                {
+                                  title: 'Rej qty',
+                                  dataIndex: 'rejected_quantity',
+                                  key: 'rejected_quantity',
+                                  width: 68,
+                                  align: 'center',
+                                },
+                                {
+                                  title: 'Yield %',
+                                  dataIndex: 'yield_percentage',
+                                  key: 'yield_percentage',
+                                  width: 64,
+                                  align: 'center',
+                                  render: val => (
+                                    <Text style={{ color: val >= 95 ? '#52c41a' : val < 80 ? '#f5222d' : '#faad14', fontWeight: 'bold' }}>
+                                      {val ? `${val}%` : '0%'}
+                                    </Text>
+                                  ),
+                                },
+                                {
+                                  title: 'Actions',
+                                  key: 'actions_reports',
+                                  width: 168,
+                                  align: 'center',
+                                  render: (_, record) => (
+                                    <Space size="small">
+                                      <Button
+                                        size="small"
+                                        icon={<EyeOutlined />}
+                                        onClick={() => void handleGenerateReport(record)}
+                                      >
+                                        View
+                                      </Button>
+                                      <Button
+                                        size="small"
+                                        icon={<CloudDownloadOutlined />}
+                                        onClick={() => {
+                                          setReportPrintData(null);
+                                          setAutoDownloadReport(true);
+                                          void handleGenerateReport(record);
+                                        }}
+                                      >
+                                        Download
+                                      </Button>
+                                    </Space>
+                                  ),
+                                },
+                              ]}
+                            />
+                          </div>
                         ),
                       },
                     ]}
@@ -2087,6 +2384,27 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                           { title: 'Nominal', dataIndex: 'nominal', key: 'nominal', width: 130, render: (v) => <Text style={{ fontFamily: '"JetBrains Mono", "Consolas", "Courier New", monospace', color: '#1f2937', fontSize: 13 }}>{v ?? '—'}</Text> },
                           { title: 'Upper Tol', dataIndex: 'uppertol', key: 'uppertol', width: 130, render: (v) => <Text style={{ fontFamily: '"JetBrains Mono", "Consolas", "Courier New", monospace', color: Number(v) > 0 ? '#15803d' : '#6b7280', fontSize: 13 }}>{fmtTol(v)}</Text> },
                           { title: 'Lower Tol', dataIndex: 'lowertol', key: 'lowertol', width: 130, render: (v) => <Text style={{ fontFamily: '"JetBrains Mono", "Consolas", "Courier New", monospace', color: Number(v) < 0 ? '#b91c1c' : '#6b7280', fontSize: 13 }}>{fmtTol(v)}</Text> },
+                          {
+                            title: 'Instrument',
+                            dataIndex: 'measured_instrument',
+                            key: 'measured_instrument',
+                            width: 160,
+                            render: (v) => {
+                              const label = (v || '').trim() || 'default';
+                              return (
+                                <Text
+                                  style={{
+                                    fontFamily: '"JetBrains Mono", "Consolas", "Courier New", monospace',
+                                    fontSize: 13,
+                                    color: label === 'default' ? '#94a3b8' : '#334155',
+                                  }}
+                                  ellipsis={{ tooltip: label }}
+                                >
+                                  {label}
+                                </Text>
+                              );
+                            },
+                          },
                         ]}
                       />
                     </div>
@@ -2248,22 +2566,38 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                   <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, background: '#fff', overflow: 'hidden' }}>
                     {measureModalLoading ? (
                       <div style={{ padding: 40, textAlign: 'center' }}><Spin /></div>
+                    ) : measureAllReadingsEmpty ? (
+                      <div style={{
+                        padding: '72px 32px',
+                        minHeight: 320,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        background: '#fafbfc',
+                      }}>
+                        <Empty
+                          image={Empty.PRESENTED_IMAGE_SIMPLE}
+                          imageStyle={{ height: 72 }}
+                          description={
+                            <Text type="secondary" style={{ fontSize: 18, fontWeight: 500 }}>
+                              No measurements found
+                            </Text>
+                          }
+                        />
+                      </div>
                     ) : (
                       <>
-                        <div style={{ padding: '8px 12px', borderBottom: '1px solid #eef0f3', background: '#fafbfc', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                          <Tag color="default" style={{ margin: 0, borderRadius: 12 }}>Total: {measureSummary.total}</Tag>
-                          <Tag color="success" style={{ margin: 0, borderRadius: 12 }}>Within Tol: {measureSummary.within}</Tag>
-                          <Tag color="error" style={{ margin: 0, borderRadius: 12 }}>Out Tol: {measureSummary.out}</Tag>
-                          <Tag color="processing" style={{ margin: 0, borderRadius: 12 }}>No Tol: {measureSummary.noTol}</Tag>
-                          <Tag color="blue" style={{ margin: 0, borderRadius: 12 }}>Pass Rate: {measureSummary.passRate}%</Tag>
-                        </div>
+                        {renderInspectionSummaryBar(measureSummary)}
+                        <style>{QM_MEASURE_TABLE_ROW_STYLES}</style>
                         <Table
+                          className="qm-measure-data-table"
                           size="small"
                           loading={measureModalLoading}
                           dataSource={measureDecoratedRows}
                           rowKey="id"
                           pagination={{ pageSize: 10, showSizeChanger: false, hideOnSinglePage: true }}
                           scroll={{ x: 'max-content', y: Math.min(480, Math.max(160, measureDecoratedRows.length * 44 + 70)) }}
+                          rowClassName={(record) => inspectionMeasureRowClass(record._status)}
                           columns={[
                             { title: 'S.No', key: 'sno', width: 60, fixed: 'left', render: (_, __, idx) => idx + 1 },
                             ...(measurePartMode ? [{
@@ -2325,31 +2659,29 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                                     dataIndex: ['measurements', i],
                                     key: `m${i}`,
                                     width: 80,
-                                    render: (v) => <Text style={{ fontSize: 11 }}>{v || '—'}</Text>
+                                    render: (v) => (
+                                      <Text style={{ fontFamily: '"JetBrains Mono", monospace', fontSize: 11 }}>
+                                        {parseNum(v) != null ? String(v).trim() : '—'}
+                                      </Text>
+                                    ),
                                   }))
                                 },
                                 {
-                                  title: 'Mean',
-                                  key: 'mean_computed',
+                                  title: 'Actual',
+                                  key: 'actual_computed',
                                   width: 100,
                                   render: (_, r) => {
                                     const m = r._computedMean;
                                     const display = m == null ? '—' : fmt2(m);
-                                    if (r._status === 'within') return <Text strong style={{ color: '#15803d' }}>{display}</Text>;
-                                    if (r._status === 'out') return <Text strong style={{ color: '#dc2626' }}>{display}</Text>;
-                                    return <Text style={{ color: '#4b5563' }}>{display}</Text>;
+                                    return renderInspectionActualCell(r, display);
                                   },
                                 },
                                 {
                                   title: 'Status',
                                   key: 'status',
-                                  width: 120,
-                                  render: (_, r) => {
-                                    if (r._status === 'within') return <Tag color="success" style={{ margin: 0, borderRadius: 10 }}>Within Tol</Tag>;
-                                    if (r._status === 'out') return <Tag color="error" style={{ margin: 0, borderRadius: 10 }}>Out Tol</Tag>;
-                                    if (r._status === 'no_tolerance') return <Tag color="processing" style={{ margin: 0, borderRadius: 10 }}>No Tol</Tag>;
-                                    return <Tag style={{ margin: 0, borderRadius: 10 }}>Pending</Tag>;
-                                  },
+                                  width: 96,
+                                  align: 'center',
+                                  render: (_, r) => renderInspectionGoNoGoTag(r._status),
                                 },
                               ],
                             },
@@ -2442,28 +2774,40 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
 
                         <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, background: '#fff', overflow: 'hidden' }}>
                           {ftpApproveAllReadingsEmpty && !ftpApproveLoading ? (
-                            <div style={{ padding: 40 }}>
-                              <Empty description="No measurements found or incomplete data" />
+                            <div style={{
+                              padding: '72px 32px',
+                              minHeight: 320,
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              background: '#fafbfc',
+                            }}>
+                              <Empty
+                                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                                imageStyle={{ height: 72 }}
+                                description={
+                                  <Text type="secondary" style={{ fontSize: 18, fontWeight: 500 }}>
+                                    No measurements found
+                                  </Text>
+                                }
+                              />
                             </div>
                           ) : (
                             <>
-                              <div style={{ padding: '8px 12px', borderBottom: '1px solid #eef0f3', background: '#fafbfc', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                                <Tag color="default" style={{ margin: 0, borderRadius: 12 }}>Total: {ftpApproveSummary.total}</Tag>
-                                <Tag color="success" style={{ margin: 0, borderRadius: 12 }}>Within Tol: {ftpApproveSummary.within}</Tag>
-                                <Tag color="error" style={{ margin: 0, borderRadius: 12 }}>Out Tol: {ftpApproveSummary.out}</Tag>
-                                <Tag color="processing" style={{ margin: 0, borderRadius: 12 }}>No Tol: {ftpApproveSummary.noTol}</Tag>
-                                <Tag color="blue" style={{ margin: 0, borderRadius: 12 }}>Pass Rate: {ftpApproveSummary.passRate}%</Tag>
-                              </div>
+                              {renderInspectionSummaryBar(ftpApproveSummary)}
+                              <style>{QM_MEASURE_TABLE_ROW_STYLES}</style>
                               <Table
+                                className="qm-measure-data-table"
                                 size="small"
                                 loading={ftpApproveLoading}
                                 dataSource={ftpApproveDecoratedRows}
                                 rowKey="id"
                                 pagination={false}
                                 scroll={{ x: 'max-content', y: 460 }}
+                                rowClassName={(record) => inspectionMeasureRowClass(record._status)}
                                 onRow={(record) => ({
                                   onClick: () => setActiveBalloonId(String(record.id)),
-                                  style: { cursor: 'pointer' }
+                                  style: { cursor: 'pointer' },
                                 })}
                                 columns={[
                                   { title: 'S.No', key: 'sno', width: 64, render: (_, __, idx) => idx + 1 },
@@ -2500,31 +2844,29 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                                     dataIndex: ['measurements', i],
                                     key: `mftp${i}`,
                                     width: 72,
-                                    render: (v) => <Text style={{ fontSize: 11 }}>{v || '—'}</Text>
+                                    render: (v) => (
+                                      <Text style={{ fontFamily: '"JetBrains Mono", monospace', fontSize: 11 }}>
+                                        {parseNum(v) != null ? String(v).trim() : '—'}
+                                      </Text>
+                                    ),
                                   }))
                                 },
                                       {
-                                        title: 'Mean',
-                                        key: 'mean_c',
+                                        title: 'Actual',
+                                        key: 'actual_c',
                                         width: 96,
                                         render: (_, r) => {
                                           const m = r._computedMean;
                                           const display = m == null ? '—' : fmt2(m);
-                                          if (r._status === 'within') return <Text strong style={{ color: '#15803d' }}>{display}</Text>;
-                                          if (r._status === 'out') return <Text strong style={{ color: '#dc2626' }}>{display}</Text>;
-                                          return <Text style={{ color: '#4b5563' }}>{display}</Text>;
+                                          return renderInspectionActualCell(r, display);
                                         },
                                       },
                                       {
                                         title: 'Status',
                                         key: 'st',
-                                        width: 118,
-                                        render: (_, r) => {
-                                          if (r._status === 'within') return <Tag color="success" style={{ margin: 0, borderRadius: 10 }}>Within</Tag>;
-                                          if (r._status === 'out') return <Tag color="error" style={{ margin: 0, borderRadius: 10 }}>Out Tol</Tag>;
-                                          if (r._status === 'no_tolerance') return <Tag color="processing" style={{ margin: 0, borderRadius: 10 }}>No Tol</Tag>;
-                                          return <Tag style={{ margin: 0, borderRadius: 10 }}>Pending</Tag>;
-                                        },
+                                        width: 96,
+                                        align: 'center',
+                                        render: (_, r) => renderInspectionGoNoGoTag(r._status),
                                       },
                                     ],
                                   },

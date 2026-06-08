@@ -1,6 +1,11 @@
 from dotenv import load_dotenv
+import os
 
 load_dotenv()
+
+# Paddle 3.x + OneDNN on Windows can fail OCR with PIR/onednn NotImplementedError.
+os.environ.setdefault("FLAGS_use_mkldnn", "0")
+os.environ.setdefault("FLAGS_enable_mkldnn", "0")
 
 # pyrefly: ignore [missing-import]
 from fastapi import FastAPI

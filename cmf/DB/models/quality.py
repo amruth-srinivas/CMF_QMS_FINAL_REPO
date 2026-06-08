@@ -116,6 +116,8 @@ class Note(Base):
     id = Column(Integer, primary_key=True, index=True)
     part_id = Column(Integer, nullable=False, index=True)
     document_id = Column(Integer, nullable=True, index=True)
+    op_no = Column(Integer, nullable=False, server_default=text("0"), index=True)
+    is_operation_document = Column(Boolean, nullable=False, server_default=text("false"))
     x = Column(Float, nullable=True)
     y = Column(Float, nullable=True)
     width = Column(Float, nullable=True)

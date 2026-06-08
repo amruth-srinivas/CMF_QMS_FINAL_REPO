@@ -40,6 +40,15 @@ const Notifications = () => {
     fetchInspectionNotifications();
   }, []);
 
+  useEffect(() => {
+    if (activeTab !== 'approval') return;
+    const refresh = () => {
+      void fetchInspectionNotifications();
+    };
+    window.addEventListener('focus', refresh);
+    return () => window.removeEventListener('focus', refresh);
+  }, [activeTab]);
+
   const fetchNotifications = async () => {
     setLoading(true);
     try {
@@ -326,6 +335,7 @@ const Notifications = () => {
         mode: 'PLAN'
       });
       if (drawing?.id) qs.set('documentId', String(drawing.id));
+      if (record.operation_id) qs.set('operationId', String(record.operation_id));
 
       const path = window.location.pathname.startsWith('/supervisor') ? '/supervisor/qms-inspector' : '/admin/qms-inspector';
       navigate(`${path}?${qs.toString()}`);
@@ -940,19 +950,17 @@ const Notifications = () => {
     {
       title: 'Actions',
       key: 'actions',
-      width: 250,
-      render: (_, record) => (
-        <Space wrap>
-          {!record.is_ack && (
-            <Button type="primary" icon={<CheckCircleOutlined />} onClick={() => handleInspectionAcknowledge(record.id)}>
-              Acknowledge
-            </Button>
-          )}
+      width: 180,
+      render: (_, record) =>
+        record.is_ack ? (
+          <Button icon={<EyeOutlined />} onClick={() => handleOpenQmsSoftware(record)}>
+            Review
+          </Button>
+        ) : (
           <Button icon={<AppstoreOutlined />} onClick={() => handleOpenQmsSoftware(record)}>
             Open QMS Software
           </Button>
-        </Space>
-      ),
+        ),
     },
   ];
 
@@ -1128,7 +1136,10 @@ const Notifications = () => {
       >
         <Tabs
           activeKey={activeTab}
-          onChange={(key) => setActiveTab(key)}
+          onChange={(key) => {
+            setActiveTab(key);
+            if (key === 'approval') void fetchInspectionNotifications();
+          }}
           items={[
             {
               key: 'production',

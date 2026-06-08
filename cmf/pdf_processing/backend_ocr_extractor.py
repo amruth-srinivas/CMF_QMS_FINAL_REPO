@@ -4,7 +4,12 @@ Region text extraction using the PaddleOCR autoballoon pipeline (pdf_processing/
 from __future__ import annotations
 
 import logging
+import os
 from typing import Dict, List, Optional, Tuple
+
+# Must be set before paddle is imported by OCRRunner.
+os.environ.setdefault("FLAGS_use_mkldnn", "0")
+os.environ.setdefault("FLAGS_enable_mkldnn", "0")
 
 import cv2
 import numpy as np
@@ -40,7 +45,7 @@ def _ensure_pipeline():
             logger.info("Initializing PaddleOCR pipeline …")
             _image_loader = ImageLoader()
             _preprocessor = Preprocessor()
-            _runner = OCRRunner()
+            _runner = OCRRunner(enable_mkldnn=False)
             logger.info("PaddleOCR pipeline ready.")
             return _runner, _preprocessor, _image_loader
         except Exception as exc:
@@ -126,7 +131,7 @@ class TextExtractor:
             return out
         except Exception as exc:
             logger.warning("PaddleOCR region extraction failed: %s", exc, exc_info=True)
-            return []
+            raise
 
     def extract_text_with_overlap_check(
         self,

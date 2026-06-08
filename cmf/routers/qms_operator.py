@@ -1,5 +1,5 @@
 """
-Operator-facing QMS helpers: in-progress operations from production_logs + local plan flags.
+Operator-facing QMS helpers: active operations (inprogress / pending) from production_logs + local plan flags.
 """
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -37,8 +37,11 @@ def _started_at(log: ProductionLog) -> Optional[str]:
     return None
 
 
+_ACTIVE_PRODUCTION_LOG_STATUSES = ("inprogress", "pending")
+
+
 def _fetch_production_logs_inprogress(db: Session, machine_id: int) -> Dict[str, Any]:
-    """Load in-progress rows from scheduling.production_logs for the given machine."""
+    """Load inprogress and pending rows from scheduling.production_logs for the given machine."""
     machine = db.query(Machine).filter(Machine.id == machine_id).first()
     machine_name = _machine_display_name(machine)
 
@@ -59,7 +62,9 @@ def _fetch_production_logs_inprogress(db: Session, machine_id: int) -> Dict[str,
         .outerjoin(latest_psi_id, latest_psi_id.c.operation_id == ProductionLog.operation_id)
         .outerjoin(latest_psi, latest_psi.id == latest_psi_id.c.max_id)
         .filter(Operation.machine_id == machine_id)
-        .filter(func.lower(func.trim(ProductionLog.status)) == "inprogress")
+        .filter(
+            func.lower(func.trim(ProductionLog.status)).in_(_ACTIVE_PRODUCTION_LOG_STATUSES)
+        )
         .order_by(ProductionLog.created_at.desc())
         .all()
     )
@@ -83,6 +88,7 @@ def _fetch_production_logs_inprogress(db: Session, machine_id: int) -> Dict[str,
                 "produced_quantity": log.produced_quantity,
                 "approved_quantity": log.approved_quantity,
                 "operator_id": log.operator_id,
+                "status": (log.status or "").strip().lower() or None,
             }
         )
 
@@ -167,7 +173,7 @@ def _preview_operation_document(db: Session, operation_id: int) -> Optional[Oper
 @router.get("/machine-inprogress/{machine_id}")
 def get_machine_inprogress_with_plan(machine_id: int, db: Session = Depends(get_db)):
     """
-    Lists in-progress operations from scheduling.production_logs for this machine,
+    Lists inprogress and pending operations from scheduling.production_logs for this machine,
     and adds has_inspection_plan and preview document hints.
     """
     data = _fetch_production_logs_inprogress(db, machine_id)
