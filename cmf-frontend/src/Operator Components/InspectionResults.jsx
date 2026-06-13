@@ -14,55 +14,13 @@ import axios from 'axios';
 import { QUALITY_API_BASE_URL } from '../Config/qualityconfig';
 import InteractiveDrawing from '../Quality Management Components/InspectorComponents/InteractiveDrawing';
 import { parseMasterBocBboxToPdfRect } from '../Quality Management Components/InspectorComponents/bocMappers';
+import { resolveBaseDrawingDocument } from '../Quality Management Components/InspectorComponents/drawingDocumentUtils';
 
 const { Title, Text } = Typography;
 
 const FONT_STACK = '"JetBrains Mono", "JetBrains Mono NL", ui-monospace, "Cascadia Code", "Consolas", monospace';
 
 const monoStyle = { fontFamily: FONT_STACK };
-
-/** Matches new "Balloon document" uploads and legacy BALOON / typo baloon. */
-function isBalloonOperationDocument(d) {
-  if (!d) return false;
-  const t = String(d.document_type || '').trim().toLowerCase();
-  return t === 'baloon' || t === 'balloon' || t.includes('balloon');
-}
-
-function getDrawingInfoFromDocs(docs) {
-  const isDrawing = (d) => {
-    if (!d) return false;
-    if (isBalloonOperationDocument(d)) return false;
-    const type = (d.document_type || '').toLowerCase();
-    const name = (d.document_name || '').toLowerCase();
-    const url = (d.document_url || '').toLowerCase();
-    const isPdfFile = url.endsWith('.pdf') || type.includes('pdf');
-    return (
-      type.includes('2d') ||
-      type.includes('drawing') ||
-      name.includes('drawing') ||
-      isPdfFile ||
-      url.endsWith('.png') ||
-      url.endsWith('.jpg') ||
-      url.endsWith('.jpeg')
-    );
-  };
-
-  const nonBalloonDocs = (docs || []).filter((d) => !isBalloonOperationDocument(d));
-  const previewDrawing = nonBalloonDocs.find(isDrawing) || nonBalloonDocs[0] || (docs || [])[0];
-
-  if (!previewDrawing) return { url: null, isPdf: false, name: '', apiDocumentId: null };
-
-  const isPdf =
-    (previewDrawing.document_url || '').toLowerCase().endsWith('.pdf') ||
-    (previewDrawing.document_type || '').toLowerCase().includes('pdf');
-
-  return {
-    url: `${QUALITY_API_BASE_URL}/operation-documents/${previewDrawing.id}/preview`,
-    isPdf,
-    name: previewDrawing.document_name,
-    apiDocumentId: previewDrawing.id,
-  };
-}
 
 const fmtTol = (value) => {
   const n = Number(value);
@@ -131,6 +89,7 @@ const InspectionResults = () => {
   const [planDrawingIsPdf, setPlanDrawingIsPdf] = useState(true);
   const [planDrawingFileName, setPlanDrawingFileName] = useState('');
   const [planBalloonDocumentId, setPlanBalloonDocumentId] = useState(null);
+  const [planDrawingEndpoint, setPlanDrawingEndpoint] = useState(null);
   const [activeBalloonId, setActiveBalloonId] = useState(null);
   const [planViewMeta, setPlanViewMeta] = useState(null);
 
@@ -214,11 +173,18 @@ const InspectionResults = () => {
     setPlanDrawingUrl('');
     setPlanDrawingFileName('');
     setPlanBalloonDocumentId(null);
+    setPlanDrawingEndpoint(null);
     setActiveBalloonId(null);
 
     const opNo = Number(op.operation_number);
     try {
-      const requests = [
+      const [opDocsRes, partDocsRes, bocRes] = await Promise.all([
+        op.operation_id
+          ? axios.get(`${QUALITY_API_BASE_URL}/operation-documents/operation/${op.operation_id}`)
+          : Promise.resolve({ data: [] }),
+        op.part_id
+          ? axios.get(`${QUALITY_API_BASE_URL}/documents/part/${op.part_id}`)
+          : Promise.resolve({ data: [] }),
         axios.get(`${QUALITY_API_BASE_URL}/quality/master-boc`, {
           params: {
             part_id: op.part_number,
@@ -226,29 +192,18 @@ const InspectionResults = () => {
             op_no: Number.isFinite(opNo) ? opNo : undefined,
           },
         }),
-      ];
-      if (op.operation_id) {
-        requests.unshift(
-          axios.get(`${QUALITY_API_BASE_URL}/operation-documents/operation/${op.operation_id}`),
-        );
-      }
+      ]);
 
-      const results = await Promise.all(requests);
-      let docs = [];
-      let bocRes;
-      if (op.operation_id) {
-        docs = Array.isArray(results[0].data) ? results[0].data : [];
-        bocRes = results[1];
-      } else {
-        bocRes = results[0];
-      }
+      const opDocs = Array.isArray(opDocsRes.data) ? opDocsRes.data : [];
+      const partDocs = Array.isArray(partDocsRes.data) ? partDocsRes.data : [];
+      const { url, isPdf, name, apiDocumentId, endpoint } = resolveBaseDrawingDocument(opDocs, partDocs);
 
-      const { url, isPdf, name, apiDocumentId } = getDrawingInfoFromDocs(docs);
       if (url && apiDocumentId) {
         setPlanDrawingUrl(url);
         setPlanDrawingIsPdf(isPdf);
         setPlanDrawingFileName(name || '');
         setPlanBalloonDocumentId(apiDocumentId);
+        setPlanDrawingEndpoint(endpoint);
       } else if (op.preview_document_id != null && op.preview_endpoint) {
         const drawUrl = `${QUALITY_API_BASE_URL}/${op.preview_endpoint}/${op.preview_document_id}/preview`;
         const docName = (op.preview_document_name || '').toLowerCase();
@@ -256,6 +211,7 @@ const InspectionResults = () => {
         setPlanDrawingIsPdf(docName.endsWith('.pdf') || docName.includes('pdf'));
         setPlanDrawingFileName(op.preview_document_name || '');
         setPlanBalloonDocumentId(op.preview_document_id);
+        setPlanDrawingEndpoint(op.preview_endpoint);
       }
 
       setPlanTableRows(Array.isArray(bocRes.data) ? bocRes.data : []);
@@ -272,10 +228,11 @@ const InspectionResults = () => {
     if (!planDrawingUrl) return;
     const id =
       planBalloonDocumentId ??
-      planDrawingUrl.match(/operation-documents\/(\d+)\//)?.[1];
+      planDrawingUrl.match(/(?:operation-documents|documents)\/(\d+)\//)?.[1];
     if (!id) return;
+    const endpoint = planDrawingEndpoint || 'operation-documents';
     const a = document.createElement('a');
-    a.href = `${QUALITY_API_BASE_URL}/operation-documents/${id}/download`;
+    a.href = `${QUALITY_API_BASE_URL}/${endpoint}/${id}/download`;
     a.target = '_blank';
     a.rel = 'noopener noreferrer';
     a.download = planDrawingFileName || `operation_${planViewMeta?.opNo || 'plan'}_balloon.pdf`;
@@ -647,7 +604,7 @@ const InspectionResults = () => {
                 />
               ) : (
                 <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  <Empty description="No balloon document found for this operation" />
+                  <Empty description="No drawing found for this operation" />
                 </div>
               )}
             </div>

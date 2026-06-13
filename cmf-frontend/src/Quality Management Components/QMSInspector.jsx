@@ -45,6 +45,11 @@ import {
   withBalloonNumbers,
 } from './InspectorComponents/bocMappers';
 import { DEFAULT_MEASURED_INSTRUMENT } from './InspectorComponents/inspectorConstants';
+import { exportBalloonedPdf } from './InspectorComponents/exportBalloonedPdf';
+import {
+  isBalloonDocumentName,
+  resolveBaseDrawingDocument,
+} from './InspectorComponents/drawingDocumentUtils';
 
 const QMSInspector = () => {
   const { message } = App.useApp();
@@ -64,31 +69,43 @@ const QMSInspector = () => {
   const projectName = searchParams.get('projectName') || '';
   const partName = searchParams.get('partName') || '';
   const operationName = searchParams.get('operationName') || '';
-  const [fetchedDocumentId, setFetchedDocumentId] = useState(null);
-  const [fetchedFileName, setFetchedFileName] = useState(null);
-  const [isOpDoc, setIsOpDoc] = useState(false);
+  const [resolvedDrawing, setResolvedDrawing] = useState(null);
 
-  const documentId = documentIdParam || fetchedDocumentId;
-  const fileName = fetchedFileName || fileNameParam;
+  const queryParamsLookBallooned = useMemo(
+    () => isBalloonDocumentName(fileNameParam),
+    [fileNameParam],
+  );
+
+  const fileName = resolvedDrawing?.name
+    || (queryParamsLookBallooned ? null : fileNameParam)
+    || 'Drawing.pdf';
 
   const fileIsPdf = useMemo(() => {
+    if (resolvedDrawing != null) return resolvedDrawing.isPdf;
     const p = searchParams.get('isPdf');
     if (p != null) return p !== 'false';
     if (!fileName) return true;
     return fileName.toLowerCase().endsWith('.pdf');
-  }, [searchParams, fileName]);
+  }, [resolvedDrawing, searchParams, fileName]);
 
   const isOperationDocument = useMemo(() => {
-    if (drawingUrl) return drawingUrl.includes('/operation-documents/');
-    return isOpDoc;
-  }, [drawingUrl, isOpDoc]);
+    if (resolvedDrawing?.endpoint) return resolvedDrawing.endpoint === 'operation-documents';
+    if (drawingUrl && !queryParamsLookBallooned) return drawingUrl.includes('/operation-documents/');
+    return false;
+  }, [resolvedDrawing, drawingUrl, queryParamsLookBallooned]);
 
   const fileUrl = useMemo(() => {
-    if (drawingUrl) return drawingUrl;
-    if (!documentId) return null;
-    const endpoint = isOperationDocument ? 'operation-documents' : 'documents';
-    return `${QUALITY_API_BASE_URL}/${endpoint}/${documentId}/preview`;
-  }, [drawingUrl, documentId, isOperationDocument]);
+    if (resolvedDrawing?.url) return resolvedDrawing.url;
+    if (drawingUrl && !queryParamsLookBallooned) return drawingUrl;
+    if (documentIdParam && !queryParamsLookBallooned) {
+      const endpoint = isOperationDocument ? 'operation-documents' : 'documents';
+      return `${QUALITY_API_BASE_URL}/${endpoint}/${documentIdParam}/preview`;
+    }
+    return null;
+  }, [resolvedDrawing, drawingUrl, queryParamsLookBallooned, documentIdParam, isOperationDocument]);
+
+  const documentId = resolvedDrawing?.apiDocumentId
+    || (queryParamsLookBallooned ? null : documentIdParam);
 
   const [quantityNo, setQuantityNo] = useState(() => {
     const q = searchParams.get('quantityNo');
@@ -115,7 +132,6 @@ const QMSInspector = () => {
 
   const viewerWrapRef = useRef(null);
   const drawingRef = useRef(null);
-  const exportBalloonedRef = useRef(null);
   const quantityClearSkipRef = useRef(true);
   const [viewerWidth, setViewerWidth] = useState(880);
   const [viewerHeight, setViewerHeight] = useState(600);
@@ -186,60 +202,32 @@ const QMSInspector = () => {
   }, [orderId]);
 
   useEffect(() => {
-    if (documentIdParam || drawingUrl) return;
     const pid = partId ? Number(partId) : null;
     const oid = operationId ? Number(operationId) : null;
     if (!pid && !oid) return;
-    
+
     let cancelled = false;
     (async () => {
       try {
-        // Try Part documents first
-        if (pid) {
-          const res = await axios.get(`${QUALITY_API_BASE_URL}/documents/part/${pid}`);
-          const docs = Array.isArray(res.data) ? res.data : [];
-          const nonBalloonDocs = docs.filter(d => {
-            const t = String(d.document_type || '').toLowerCase();
-            return !(t === 'baloon' || t === 'balloon' || t.includes('balloon'));
-          });
-          const best = nonBalloonDocs.find(d => 
-            d.document_type?.toLowerCase().includes('2d') || 
-            d.document_name?.toLowerCase().includes('drawing')
-          ) || nonBalloonDocs[0] || docs[0];
-          
-          if (best && !cancelled) {
-            setFetchedDocumentId(best.id);
-            setFetchedFileName(best.document_name);
-            setIsOpDoc(false);
-            return;
-          }
-        }
-
-        // Try Operation documents if no part doc found
-        if (oid) {
-          const res = await axios.get(`${QUALITY_API_BASE_URL}/operation-documents/operation/${oid}`);
-          const docs = Array.isArray(res.data) ? res.data : [];
-          const nonBalloonDocs = docs.filter(d => {
-            const t = String(d.document_type || '').toLowerCase();
-            return !(t === 'baloon' || t === 'balloon' || t.includes('balloon'));
-          });
-          const best = nonBalloonDocs.find(d => 
-            d.document_type?.toLowerCase().includes('2d') || 
-            d.document_name?.toLowerCase().includes('drawing')
-          ) || nonBalloonDocs[0] || docs[0];
-
-          if (best && !cancelled) {
-            setFetchedDocumentId(best.id);
-            setFetchedFileName(best.document_name);
-            setIsOpDoc(true);
-          }
-        }
+        const [partRes, opRes] = await Promise.all([
+          pid
+            ? axios.get(`${QUALITY_API_BASE_URL}/documents/part/${pid}`).catch(() => ({ data: [] }))
+            : Promise.resolve({ data: [] }),
+          oid
+            ? axios.get(`${QUALITY_API_BASE_URL}/operation-documents/operation/${oid}`).catch(() => ({ data: [] }))
+            : Promise.resolve({ data: [] }),
+        ]);
+        if (cancelled) return;
+        const partDocs = Array.isArray(partRes.data) ? partRes.data : [];
+        const opDocs = Array.isArray(opRes.data) ? opRes.data : [];
+        setResolvedDrawing(resolveBaseDrawingDocument(opDocs, partDocs));
       } catch (err) {
-        console.warn('Auto-fetch document failed', err);
+        console.warn('Resolve base drawing failed', err);
+        if (!cancelled) setResolvedDrawing(null);
       }
     })();
     return () => { cancelled = true; };
-  }, [partId, operationId, documentIdParam, drawingUrl]);
+  }, [partId, operationId]);
 
   useEffect(() => {
     const pid = partId ? Number(partId) : null;
@@ -273,20 +261,13 @@ const QMSInspector = () => {
     });
   }, [partQtyMax, canNavigateToOthers]);
 
-  const quantityOptions = useMemo(
-    () => {
-      const limit = canNavigateToOthers ? partQtyMax : 1;
-      const opts = Array.from({ length: limit }, (_, i) => ({
-        value: i + 1,
-        label: `Quantity ${i + 1}`,
-      }));
-      if (canNavigateToOthers) {
-        opts.push({ value: 'consolidated', label: 'Consolidated' });
-      }
-      return opts;
-    },
-    [partQtyMax, canNavigateToOthers],
-  );
+  const quantityOptions = useMemo(() => {
+    const limit = canNavigateToOthers ? partQtyMax : 1;
+    return Array.from({ length: limit }, (_, i) => ({
+      value: i + 1,
+      label: `Quantity ${i + 1}`,
+    }));
+  }, [partQtyMax, canNavigateToOthers]);
 
   const fetchMasterBoc = useCallback(async () => {
     const oid = Number(salesOrderId);
@@ -465,24 +446,6 @@ const QMSInspector = () => {
     const oid = Number(salesOrderId);
     if (!pid || !oid || !partNumber) return;
 
-    // 1. Handle Consolidated / ALL view: Fetch existing measurements without 'ensuring' (POST)
-    // The 'ensure' endpoint requires a specific integer quantity_no.
-    const isNumericQty = typeof quantityNo === 'number';
-
-    if (!isNumericQty) {
-      try {
-        const res = await axios.get(`${QUALITY_API_BASE_URL}/quality/stage-inspection`, {
-          params: { part_id: pid, sale_order_id: oid, op_no: opNo },
-        });
-        setStageRows(Array.isArray(res.data) ? res.data : []);
-      } catch (err) {
-        console.error('[QMSInspector] Failed to fetch consolidated rows:', err);
-        setStageRows([]);
-      }
-      return;
-    }
-
-    // 2. Handle specific quantity view: Ensure rows exist before fetching
     if (quantityNo > 1 && !ftpApproved) return;
 
     try {
@@ -1007,25 +970,29 @@ const QMSInspector = () => {
       okText: 'Confirm',
       onOk: async () => {
         try {
-          // Only attempt PDF export and upload for real operations (not op 0 / Final Part)
-          // Note: With InteractiveDrawing, we rely on DB coordinates, but we still try to upload a snapshot if available.
+          // Export ballooned PDF and upload to MinIO (operation-documents). Re-confirm uploads a new revision.
           if (!isFinalPart && opIdInt > 0) {
-            const exporter = exportBalloonedRef.current;
-            if (typeof exporter === 'function') {
-              const blob = await exporter();
-              if (blob) {
-                const fd = new FormData();
-                const safePart = (partNumber || 'part').replace(/[^a-zA-Z0-9_-]+/g, '_');
-                const fileName = `${safePart}_op${opNoInt}_balloon.pdf`;
-                fd.append('operation_id', String(opIdInt));
-                fd.append('document_type', 'Balloon document');
-                fd.append('document_version', '1.0');
-                fd.append('files', new File([blob], fileName, { type: 'application/pdf' }));
-                await axios.post(`${QUALITY_API_BASE_URL}/operation-documents/upload/`, fd, {
-                  headers: { 'Content-Type': 'multipart/form-data' },
-                });
-              }
+            if (!fileUrl) {
+              throw new Error('Drawing is not loaded. Cannot store ballooned PDF.');
             }
+            const blob = await exportBalloonedPdf({
+              fileUrl,
+              isPdf: fileIsPdf,
+              balloonOverlays,
+            });
+            if (!blob) {
+              throw new Error('Could not generate ballooned PDF from the drawing and characteristics.');
+            }
+            const fd = new FormData();
+            const safePart = (partNumber || 'part').replace(/[^a-zA-Z0-9_-]+/g, '_');
+            const fileName = `${safePart}_op${opNoInt}_balloon.pdf`;
+            fd.append('operation_id', String(opIdInt));
+            fd.append('document_type', 'IPID');
+            fd.append('document_version', '1.0');
+            fd.append('files', new File([blob], fileName, { type: 'application/pdf' }));
+            await axios.post(`${QUALITY_API_BASE_URL}/operation-documents/upload/`, fd, {
+              headers: { 'Content-Type': 'multipart/form-data' },
+            });
           }
 
           let confirmUser = '';
@@ -1059,7 +1026,20 @@ const QMSInspector = () => {
         }
       },
     });
-  }, [salesOrderId, partNumber, partId, operationId, searchParams, bocRowsRaw.length, message, fetchMasterBoc, refreshMeasurementSummary]);
+  }, [
+    salesOrderId,
+    partNumber,
+    partId,
+    operationId,
+    searchParams,
+    bocRowsRaw.length,
+    fileUrl,
+    fileIsPdf,
+    balloonOverlays,
+    message,
+    fetchMasterBoc,
+    refreshMeasurementSummary,
+  ]);
 
   useEffect(() => {
     if (!bocRowsRaw.length || !partId || !documentId || bocEditLocked) return;

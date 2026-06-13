@@ -7,8 +7,32 @@ import { QUALITY_API_BASE_URL } from '../Config/qualityconfig';
 import dayjs from 'dayjs';
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
+import InteractiveDrawing from '../Quality Management Components/InspectorComponents/InteractiveDrawing';
+import { parseMasterBocBboxToPdfRect } from '../Quality Management Components/InspectorComponents/bocMappers';
+import {
+  isExportedInspectionPlanDocument,
+  resolveBaseDrawingDocument,
+} from '../Quality Management Components/InspectorComponents/drawingDocumentUtils';
 
 const { Title, Text } = Typography;
+
+const MONO_FONT = '"JetBrains Mono", "Consolas", "Courier New", monospace';
+
+const fmtPlanTol = (value) => {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '—';
+  if (Math.abs(n) < 1e-12) return '0';
+  return n > 0 ? `+${n}` : `${n}`;
+};
+
+const planDimensionTypeTagColor = (value) => {
+  const v = (value || '').toString().toLowerCase();
+  if (!v) return 'default';
+  if (v.includes('diameter')) return 'gold';
+  if (v.includes('length') || v.includes('linear')) return 'blue';
+  if (v.includes('angle')) return 'purple';
+  return 'geekblue';
+};
 
 const Notifications = () => {
   const navigate = useNavigate();
@@ -33,6 +57,17 @@ const Notifications = () => {
   const [planDrawingUrl, setPlanDrawingUrl] = useState(null);
   const [planDrawingIsPdf, setPlanDrawingIsPdf] = useState(true);
   const [planDrawingFileName, setPlanDrawingFileName] = useState(null);
+
+  const [planViewOpen, setPlanViewOpen] = useState(false);
+  const [planViewLoading, setPlanViewLoading] = useState(false);
+  const [planViewMeta, setPlanViewMeta] = useState(null);
+  const [planViewTableRows, setPlanViewTableRows] = useState([]);
+  const [planViewDrawingUrl, setPlanViewDrawingUrl] = useState('');
+  const [planViewDrawingIsPdf, setPlanViewDrawingIsPdf] = useState(true);
+  const [planViewDrawingFileName, setPlanViewDrawingFileName] = useState('');
+  const [planViewBalloonDocumentId, setPlanViewBalloonDocumentId] = useState(null);
+  const [planViewDrawingEndpoint, setPlanViewDrawingEndpoint] = useState(null);
+  const [planViewActiveBalloonId, setPlanViewActiveBalloonId] = useState(null);
 
   useEffect(() => {
     fetchNotifications();
@@ -281,6 +316,103 @@ const Notifications = () => {
     }
   };
 
+  const planViewInteractiveBalloons = useMemo(() => {
+    return (planViewTableRows || [])
+      .map((r, idx) => {
+        const rect = parseMasterBocBboxToPdfRect(r.bbox);
+        if (!rect) return null;
+        return {
+          id: String(r.id),
+          label: String(idx + 1),
+          x: rect.x,
+          y: rect.y,
+          width: rect.width,
+          height: rect.height,
+          page: rect.page || 1,
+        };
+      })
+      .filter(Boolean);
+  }, [planViewTableRows]);
+
+  const openPlanViewModal = async (record) => {
+    setPlanViewMeta({
+      orderNo: record.sale_order_number ?? record.order_id ?? '—',
+      partNo: record.part_number || '—',
+      opNo: record.op_no ?? '—',
+      opName: '',
+    });
+    setPlanViewOpen(true);
+    setPlanViewLoading(true);
+    setPlanViewTableRows([]);
+    setPlanViewDrawingUrl('');
+    setPlanViewDrawingFileName('');
+    setPlanViewBalloonDocumentId(null);
+    setPlanViewDrawingEndpoint(null);
+    setPlanViewActiveBalloonId(null);
+
+    const opNo = Number(record.op_no);
+    try {
+      let partPk = record.part_id;
+      if (!partPk && record.part_number) {
+        const pRes = await axios.get(`${QUALITY_API_BASE_URL}/parts/part-number/${record.part_number}`);
+        partPk = pRes.data?.id;
+      }
+
+      const [opDocsRes, partDocsRes, bocRes, opRes] = await Promise.all([
+        axios.get(`${QUALITY_API_BASE_URL}/operation-documents/operation/${record.operation_id}`),
+        partPk
+          ? axios.get(`${QUALITY_API_BASE_URL}/documents/part/${partPk}`)
+          : Promise.resolve({ data: [] }),
+        axios.get(`${QUALITY_API_BASE_URL}/quality/master-boc`, {
+          params: {
+            part_id: record.part_number,
+            sales_order_id: Number(record.order_id),
+            op_no: Number.isFinite(opNo) ? opNo : undefined,
+          },
+        }),
+        axios.get(`${QUALITY_API_BASE_URL}/operations/${record.operation_id}`),
+      ]);
+
+      const opName = opRes.data?.operation_name || '';
+      setPlanViewMeta((prev) => (prev ? { ...prev, opName } : prev));
+
+      const opDocs = Array.isArray(opDocsRes.data) ? opDocsRes.data : [];
+      const partDocs = Array.isArray(partDocsRes.data) ? partDocsRes.data : [];
+      const { url, isPdf, name, apiDocumentId, endpoint } = resolveBaseDrawingDocument(opDocs, partDocs);
+
+      if (url && apiDocumentId) {
+        setPlanViewDrawingUrl(url);
+        setPlanViewDrawingIsPdf(isPdf);
+        setPlanViewDrawingFileName(name || '');
+        setPlanViewBalloonDocumentId(apiDocumentId);
+        setPlanViewDrawingEndpoint(endpoint);
+      }
+
+      setPlanViewTableRows(Array.isArray(bocRes.data) ? bocRes.data : []);
+    } catch (err) {
+      console.error(err);
+      const detail = err.response?.data?.detail;
+      message.error(typeof detail === 'string' ? detail : err.message || 'Failed to load plan details');
+    } finally {
+      setPlanViewLoading(false);
+    }
+  };
+
+  const handleDownloadPlanViewDrawing = () => {
+    if (!planViewDrawingUrl) return;
+    const id =
+      planViewBalloonDocumentId ??
+      planViewDrawingUrl.match(/(?:operation-documents|documents)\/(\d+)\//)?.[1];
+    if (!id) return;
+    const endpoint = planViewDrawingEndpoint || 'operation-documents';
+    const a = document.createElement('a');
+    a.href = `${QUALITY_API_BASE_URL}/${endpoint}/${id}/download`;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.download = planViewDrawingFileName || `operation_${planViewMeta?.opNo || 'plan'}_drawing.pdf`;
+    a.click();
+  };
+
   const handleOpenQmsSoftware = async (record) => {
     const hideLoading = message.loading('Resolving project details...', 0);
     try {
@@ -293,22 +425,16 @@ const Notifications = () => {
       if (!partPk) throw new Error('Could not resolve Part ID');
 
       // 2. Resolve Operation + Drawing Details
-      const [opRes, docsRes] = await Promise.all([
+      const [opRes, docsRes, partDocsRes] = await Promise.all([
         axios.get(`${QUALITY_API_BASE_URL}/operations/${record.operation_id}`),
-        axios.get(`${QUALITY_API_BASE_URL}/operation-documents/operation/${record.operation_id}`)
+        axios.get(`${QUALITY_API_BASE_URL}/operation-documents/operation/${record.operation_id}`),
+        axios.get(`${QUALITY_API_BASE_URL}/documents/part/${partPk}`).catch(() => ({ data: [] })),
       ]);
       const op = opRes.data;
       const docs = Array.isArray(docsRes.data) ? docsRes.data : [];
+      const partDocs = Array.isArray(partDocsRes.data) ? partDocsRes.data : [];
 
-      // 3. Find 2D Drawing
-      const isDrawing = (d) => {
-        const type = (d.document_type || "").toLowerCase();
-        const name = (d.document_name || "").toLowerCase();
-        return type.includes('2d') || type.includes('drawing') || name.includes('drawing') || name.endsWith('.pdf');
-      };
-      const drawing = docs.find(isDrawing) || docs[0];
-      const drawingUrl = drawing ? `${QUALITY_API_BASE_URL}/operation-documents/${drawing.id}/preview` : '';
-      const isPdf = drawing ? (drawing.document_name || '').toLowerCase().endsWith('.pdf') : false;
+      const { url: drawingUrl, isPdf, name: drawingName, apiDocumentId } = resolveBaseDrawingDocument(docs, partDocs);
 
       // 4. Resolve Project Name (via Part -> Product)
       let projectName = 'PROJECT';
@@ -329,12 +455,12 @@ const Notifications = () => {
         partName: op?.part_name || 'PART',
         operationName: op?.operation_name || `OP ${record.op_no}`,
         operationNumber: String(record.op_no),
-        drawingUrl,
+        drawingUrl: drawingUrl || '',
         isPdf: String(isPdf),
-        fileName: drawing?.document_name || 'Drawing',
+        fileName: drawingName || 'Drawing',
         mode: 'PLAN'
       });
-      if (drawing?.id) qs.set('documentId', String(drawing.id));
+      if (apiDocumentId != null) qs.set('documentId', String(apiDocumentId));
       if (record.operation_id) qs.set('operationId', String(record.operation_id));
 
       const path = window.location.pathname.startsWith('/supervisor') ? '/supervisor/qms-inspector' : '/admin/qms-inspector';
@@ -503,12 +629,6 @@ const Notifications = () => {
         console.warn('stage-inspection/ensure', ensureErr);
       }
 
-      const isBalloonOperationDocument = (d) => {
-        if (!d) return false;
-        const t = String(d.document_type || '').trim().toLowerCase();
-        return t === 'baloon' || t === 'balloon' || t.includes('balloon');
-      };
-
       const [res, docsRes] = await Promise.all([
         axios.get(`${QUALITY_API_BASE_URL}/quality/stage-inspection`, {
           params: {
@@ -525,7 +645,7 @@ const Notifications = () => {
 
       const docs = Array.isArray(docsRes.data) ? docsRes.data : [];
       const baloonDoc = docs
-        .filter(isBalloonOperationDocument)
+        .filter(isExportedInspectionPlanDocument)
         .sort((a, b) => Number(b?.id || 0) - Number(a?.id || 0))[0];
 
       if (baloonDoc) {
@@ -953,7 +1073,7 @@ const Notifications = () => {
       width: 180,
       render: (_, record) =>
         record.is_ack ? (
-          <Button icon={<EyeOutlined />} onClick={() => handleOpenQmsSoftware(record)}>
+          <Button icon={<EyeOutlined />} onClick={() => openPlanViewModal(record)}>
             Review
           </Button>
         ) : (
@@ -1283,6 +1403,96 @@ const Notifications = () => {
           ]}
         />
       </Card>
+
+      {/* Confirmed inspection plan view (Approval Notifications → Review) */}
+      <Modal
+        title={`Operation ${planViewMeta?.opNo || '—'}: ${planViewMeta?.opName || 'Inspection Plan'}`}
+        centered
+        footer={null}
+        width="95%"
+        onCancel={() => setPlanViewOpen(false)}
+        open={planViewOpen}
+        styles={{ body: { padding: 12, height: '80vh', background: '#f7f8fa' } }}
+      >
+        <div style={{ display: 'grid', gridTemplateColumns: '1.45fr 1fr', gap: 14, height: '100%', fontFamily: MONO_FONT }}>
+          <div style={{ border: '1px solid #dfe4ea', borderRadius: 10, overflow: 'hidden', background: '#fff', display: 'flex', flexDirection: 'column', boxShadow: '0 2px 10px rgba(15,23,42,0.04)' }}>
+            <div style={{ padding: '14px 16px', borderBottom: '1px solid #eef0f3', background: '#fafbfc' }}>
+              <Text strong style={{ color: '#111827', fontSize: 22, lineHeight: 1.2, fontFamily: MONO_FONT }}>Inspection Details</Text>
+              <div style={{ marginTop: 10, fontSize: 16, color: '#374151' }}>
+                <Text style={{ fontSize: 16, fontFamily: MONO_FONT }}><b>Order:</b> {planViewMeta?.orderNo || '—'}</Text>
+                <Text style={{ fontSize: 16, marginLeft: 18, fontFamily: MONO_FONT }}><b>Part:</b> {planViewMeta?.partNo || '—'}</Text>
+                <Text style={{ fontSize: 16, marginLeft: 18, fontFamily: MONO_FONT }}><b>Operation:</b> {planViewMeta?.opNo || '—'}</Text>
+              </div>
+            </div>
+            <div style={{ padding: '0 10px 10px', flex: 1, minHeight: 0 }}>
+              <Table
+                size="small"
+                loading={planViewLoading}
+                dataSource={planViewTableRows}
+                rowKey="id"
+                pagination={{ pageSize: 14, showSizeChanger: false }}
+                scroll={{ x: 'max-content', y: 520 }}
+                columns={[
+                  { title: 'S.No', key: 'sno', width: 82, render: (_, __, idx) => <Text style={{ fontFamily: MONO_FONT, fontSize: 13 }}>{idx + 1}</Text> },
+                  { title: 'Zone', dataIndex: 'zone', key: 'zone', width: 90, render: (z) => <Tag color="geekblue" style={{ margin: 0, borderRadius: 10, fontFamily: MONO_FONT }}>{z || '—'}</Tag> },
+                  { title: 'Description', dataIndex: 'dimension_type', key: 'dimension_type', width: 240, render: (val) => <Tag color={planDimensionTypeTagColor(val)} style={{ margin: 0, borderRadius: 10, fontFamily: MONO_FONT }}>{val || '—'}</Tag> },
+                  { title: 'Nominal', dataIndex: 'nominal', key: 'nominal', width: 130, render: (v) => <Text style={{ fontFamily: MONO_FONT, color: '#1f2937', fontSize: 13 }}>{v ?? '—'}</Text> },
+                  { title: 'Upper Tol', dataIndex: 'uppertol', key: 'uppertol', width: 130, render: (v) => <Text style={{ fontFamily: MONO_FONT, color: Number(v) > 0 ? '#15803d' : '#6b7280', fontSize: 13 }}>{fmtPlanTol(v)}</Text> },
+                  { title: 'Lower Tol', dataIndex: 'lowertol', key: 'lowertol', width: 130, render: (v) => <Text style={{ fontFamily: MONO_FONT, color: Number(v) < 0 ? '#b91c1c' : '#6b7280', fontSize: 13 }}>{fmtPlanTol(v)}</Text> },
+                  {
+                    title: 'Instrument',
+                    dataIndex: 'measured_instrument',
+                    key: 'measured_instrument',
+                    width: 160,
+                    render: (v) => {
+                      const label = (v || '').trim() || 'default';
+                      return (
+                        <Text
+                          style={{
+                            fontFamily: MONO_FONT,
+                            fontSize: 13,
+                            color: label === 'default' ? '#94a3b8' : '#334155',
+                          }}
+                          ellipsis={{ tooltip: label }}
+                        >
+                          {label}
+                        </Text>
+                      );
+                    },
+                  },
+                ]}
+              />
+            </div>
+          </div>
+          <div style={{ border: '1px solid #dfe4ea', borderRadius: 10, overflow: 'hidden', background: '#fff', display: 'flex', flexDirection: 'column', boxShadow: '0 2px 10px rgba(15,23,42,0.04)' }}>
+            <div style={{ padding: '10px 14px', borderBottom: '1px solid #eef0f3', background: '#fafbfc', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <Text strong style={{ color: '#111827', fontFamily: MONO_FONT }}>Drawing View</Text>
+              <Button size="small" icon={<CloudDownloadOutlined />} onClick={handleDownloadPlanViewDrawing} disabled={!planViewDrawingUrl}>
+                Download Drawing
+              </Button>
+            </div>
+            <div style={{ flex: 1, minHeight: 0, padding: 10, display: 'flex', flexDirection: 'column', background: '#f8fafc' }}>
+              {planViewLoading ? (
+                <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Spin /></div>
+              ) : planViewDrawingUrl && planViewBalloonDocumentId ? (
+                <InteractiveDrawing
+                  pdfId={planViewBalloonDocumentId}
+                  directImageSrc={!planViewDrawingIsPdf ? planViewDrawingUrl : null}
+                  pageNumber={1}
+                  balloons={planViewInteractiveBalloons}
+                  activeBalloonId={planViewActiveBalloonId}
+                  onBalloonClick={(b) => setPlanViewActiveBalloonId(b.id)}
+                  balloonColor="blue"
+                />
+              ) : (
+                <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <Empty description="No drawing found for this operation" />
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </Modal>
 
       {/* FTP Approval Modal */}
       <Modal

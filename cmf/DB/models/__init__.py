@@ -37,6 +37,7 @@ from .quality import (
     FTP,
     InspectionPlanStatus,
     Note,
+    InspectionReportSave,
 )
 from .scheduling import (
     OrderScheduleStatus,
@@ -83,6 +84,7 @@ __all__ = [
     "FTP",
     "InspectionPlanStatus",
     "Note",
+    "InspectionReportSave",
     "InspectionPlanNotification",
     "Base"
 ]

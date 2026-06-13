@@ -131,43 +131,48 @@ def _has_inspection_plan(db: Session, part_number: str, order_id: int, op_no: Op
     return bool(confirmed)
 
 
+def _is_balloon_operation_document(doc: OperationDocument) -> bool:
+    doc_type = (doc.document_type or "").strip().lower()
+    doc_name = (doc.document_name or "").strip().lower()
+    if "balloon" in doc_type or "baloon" in doc_type:
+        return True
+    return "balloon" in doc_name or "baloon" in doc_name or "_balloon." in doc_name
+
+
 def _preview_operation_document(db: Session, operation_id: int) -> Optional[OperationDocument]:
     """
-    Prefer 'balloon' documents (annotated plans) for the operator's preview.
-    Falls back to the first available document if no ballooned version exists.
+    Prefer the base drawing for interactive preview (balloons rendered from master BOC).
+    Skips exported balloon PDFs stored on the operation.
     """
-    # 1. Look for ballooned documents first (case-insensitive match on 'balloon' or 'baloon')
-    balloon_doc = (
-        db.query(OperationDocument)
-        .filter(
-            OperationDocument.operation_id == operation_id,
-            OperationDocument.document_type.ilike("%balloon%"),
-        )
-        .order_by(OperationDocument.id.desc())  # Newest balloon first
-        .first()
-    )
-    if not balloon_doc:
-        # Fallback for common typo
-        balloon_doc = (
-            db.query(OperationDocument)
-            .filter(
-                OperationDocument.operation_id == operation_id,
-                OperationDocument.document_type.ilike("%baloon%"),
-            )
-            .order_by(OperationDocument.id.desc())
-            .first()
-        )
-
-    if balloon_doc:
-        return balloon_doc
-
-    # 2. Fallback to the first document ever uploaded
-    return (
+    docs = (
         db.query(OperationDocument)
         .filter(OperationDocument.operation_id == operation_id)
         .order_by(OperationDocument.id.asc())
-        .first()
+        .all()
     )
+    if not docs:
+        return None
+
+    base_docs = [d for d in docs if not _is_balloon_operation_document(d)]
+    pool = base_docs or docs
+
+    for doc in pool:
+        doc_type = (doc.document_type or "").lower()
+        doc_name = (doc.document_name or "").lower()
+        doc_url = (doc.document_url or "").lower()
+        if (
+            "2d" in doc_type
+            or "drawing" in doc_type
+            or "ipid" in doc_type
+            or "drawing" in doc_name
+            or doc_url.endswith(".pdf")
+            or doc_url.endswith(".png")
+            or doc_url.endswith(".jpg")
+            or doc_url.endswith(".jpeg")
+        ):
+            return doc
+
+    return pool[0]
 
 
 @router.get("/machine-inprogress/{machine_id}")

@@ -126,3 +126,35 @@ class Note(Base):
     note_text = Column(Text, nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=True)
+
+
+class InspectionReportSave(Base):
+    """
+    Saved inspection report edits (remarks, footer test fields, signatories).
+    """
+    __tablename__ = "inspection_report_save"
+    __table_args__ = (
+        UniqueConstraint(
+            "part_number",
+            "sales_order_id",
+            "op_no",
+            "quantity_no",
+            "consolidated",
+            name="uix_inspection_report_save_scope",
+        ),
+        {"schema": "quality"},
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    part_number = Column(String, nullable=False)
+    sales_order_id = Column(Integer, nullable=False)
+    op_no = Column(Integer, nullable=False)
+    quantity_no = Column(Integer, nullable=False, server_default=text("1"))
+    consolidated = Column(Boolean, nullable=False, server_default=text("false"))
+    row_remarks = Column(JSON, nullable=True)
+    footer_rows = Column(JSON, nullable=True)
+    inspected_by = Column(String(255), nullable=True)
+    checked_by = Column(String(255), nullable=True)
+    saved_by_username = Column(String(255), nullable=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)

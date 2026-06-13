@@ -112,24 +112,20 @@ const InspectorBOCTable = ({
 }) => {
   const [qtyInput, setQtyInput] = React.useState('');
   useEffect(() => {
-    setQtyInput(quantityNo === 'consolidated' ? 'ALL' : String(quantityNo));
+    setQtyInput(String(quantityNo));
   }, [quantityNo]);
 
   const handleQtySubmit = () => {
-    const val = (qtyInput || '').trim().toUpperCase();
+    const val = (qtyInput || '').trim();
     if (!val) {
-      setQtyInput(quantityNo === 'consolidated' ? 'ALL' : String(quantityNo));
-      return;
-    }
-    if (val === 'ALL' || val === 'CONSOLIDATED') {
-      onQuantityChange?.('consolidated');
+      setQtyInput(String(quantityNo));
       return;
     }
     const n = parseInt(val, 10);
-    const max = quantityOptions.filter(o => typeof o.value === 'number').length;
+    const max = quantityOptions.length;
     if (Number.isNaN(n) || n < 1 || n > max) {
       message.warning(`Quantity ${val} does not exist (Max: ${max})`);
-      setQtyInput(quantityNo === 'consolidated' ? 'ALL' : String(quantityNo));
+      setQtyInput(String(quantityNo));
       return;
     }
     onQuantityChange?.(n);
@@ -575,10 +571,10 @@ const InspectorBOCTable = ({
             <div style={{ display: 'flex', alignItems: 'center', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '6px', padding: '1px 4px', gap: 6 }}>
               <Button size="small" type="text" icon={<LeftOutlined style={{ fontSize: 10 }} />} disabled={quantityNo === 1 || quantityOptions.length <= 1} onClick={() => { const idx = quantityOptions.findIndex(o => o.value === quantityNo); if (idx > 0) onQuantityChange?.(quantityOptions[idx - 1].value); }} style={{ width: 22, height: 22, padding: 0 }} />
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minWidth: 50, gap: 2 }}>
-                <Input size="small" variant="borderless" value={qtyInput} onChange={(e) => setQtyInput(e.target.value)} onPressEnter={handleQtySubmit} onBlur={handleQtySubmit} style={{ width: qtyInput === 'ALL' ? 32 : 24, textAlign: qtyInput === 'ALL' ? 'center' : 'right', fontSize: '11px', fontWeight: 700, color: '#334155', padding: 0, height: '22px', fontFamily: '"JetBrains Mono", monospace' }} />
-                {quantityNo !== 'consolidated' && <Text style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 600, userSelect: 'none' }}>/ {quantityOptions.filter(o => typeof o.value === 'number').length}</Text>}
+                <Input size="small" variant="borderless" value={qtyInput} onChange={(e) => setQtyInput(e.target.value)} onPressEnter={handleQtySubmit} onBlur={handleQtySubmit} style={{ width: 24, textAlign: 'right', fontSize: '11px', fontWeight: 700, color: '#334155', padding: 0, height: '22px', fontFamily: '"JetBrains Mono", monospace' }} />
+                <Text style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 600, userSelect: 'none' }}>/ {quantityOptions.length}</Text>
               </div>
-              <Button size="small" type="text" icon={<RightOutlined style={{ fontSize: 10 }} />} disabled={quantityNo === 'consolidated' || (quantityNo === quantityOptions.filter(o => typeof o.value === 'number').length && !quantityOptions.some(o => o.value === 'consolidated'))} onClick={() => { const idx = quantityOptions.findIndex(o => o.value === quantityNo); if (idx >= 0 && idx < quantityOptions.length - 1) onQuantityChange?.(quantityOptions[idx + 1].value); }} style={{ width: 22, height: 22, padding: 0 }} />
+              <Button size="small" type="text" icon={<RightOutlined style={{ fontSize: 10 }} />} disabled={quantityNo === quantityOptions.length || quantityOptions.length <= 1} onClick={() => { const idx = quantityOptions.findIndex(o => o.value === quantityNo); if (idx >= 0 && idx < quantityOptions.length - 1) onQuantityChange?.(quantityOptions[idx + 1].value); }} style={{ width: 22, height: 22, padding: 0 }} />
             </div>
           )}
           {typeof onSetInstrument === 'function' && !operatorMeasureMode && (

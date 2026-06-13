@@ -6,15 +6,12 @@ import { CheckCircleOutlined, EyeOutlined, CloudDownloadOutlined, InfoCircleOutl
 import dayjs from 'dayjs';
 import axios from 'axios';
 import { QUALITY_API_BASE_URL } from '../Config/qualityconfig';
+import {
+  isExportedInspectionPlanDocument,
+  resolveBaseDrawingDocument,
+} from '../Quality Management Components/InspectorComponents/drawingDocumentUtils';
 
 const { Text } = Typography;
-
-/** Helper: Matches new "Balloon document" uploads and legacy BALOON / typo baloon. */
-function isBalloonOperationDocument(d) {
-  if (!d) return false;
-  const t = String(d.document_type || '').trim().toLowerCase();
-  return t === 'baloon' || t === 'balloon' || t.includes('balloon');
-}
 
 /** Helper: PDF iframes in preview/review: hide toolbar and left thumbnail/outline pane. */
 function pdfEmbedSrcForReview(url) {
@@ -135,22 +132,16 @@ const InspectionPlanNotifications = ({ dateRange, onCount }) => {
       if (!partPk) throw new Error('Could not resolve Part ID');
 
       // 2. Resolve Operation + Drawing Details
-      const [opRes, docsRes] = await Promise.all([
+      const [opRes, docsRes, partDocsRes] = await Promise.all([
         axios.get(`${QUALITY_API_BASE_URL}/operations/${record.operation_id}`),
-        axios.get(`${QUALITY_API_BASE_URL}/operation-documents/operation/${record.operation_id}`)
+        axios.get(`${QUALITY_API_BASE_URL}/operation-documents/operation/${record.operation_id}`),
+        axios.get(`${QUALITY_API_BASE_URL}/documents/part/${partPk}`).catch(() => ({ data: [] })),
       ]);
       const op = opRes.data;
       const docs = Array.isArray(docsRes.data) ? docsRes.data : [];
+      const partDocs = Array.isArray(partDocsRes.data) ? partDocsRes.data : [];
 
-      // 3. Find 2D Drawing
-      const isDrawing = (d) => {
-        const type = (d.document_type || "").toLowerCase();
-        const name = (d.document_name || "").toLowerCase();
-        return type.includes('2d') || type.includes('drawing') || name.includes('drawing') || name.endsWith('.pdf');
-      };
-      const drawing = docs.find(isDrawing) || docs[0];
-      const drawingUrl = drawing ? `${QUALITY_API_BASE_URL}/operation-documents/${drawing.id}/preview` : '';
-      const isPdf = drawing ? (drawing.document_name || '').toLowerCase().endsWith('.pdf') : false;
+      const { url: drawingUrl, isPdf, name: drawingName, apiDocumentId } = resolveBaseDrawingDocument(docs, partDocs);
 
       // 4. Resolve Project Name (via Part -> Product)
       let projectName = 'PROJECT';
@@ -171,12 +162,12 @@ const InspectionPlanNotifications = ({ dateRange, onCount }) => {
         partName: op?.part_name || 'PART',
         operationName: op?.operation_name || `OP ${record.op_no}`,
         operationNumber: String(record.op_no),
-        drawingUrl,
+        drawingUrl: drawingUrl || '',
         isPdf: String(isPdf),
-        fileName: drawing?.document_name || 'Drawing',
+        fileName: drawingName || 'Drawing',
         mode: 'PLAN'
       });
-      if (drawing?.id) qs.set('documentId', String(drawing.id));
+      if (apiDocumentId != null) qs.set('documentId', String(apiDocumentId));
       if (record.operation_id) qs.set('operationId', String(record.operation_id));
 
       const path = window.location.pathname.startsWith('/supervisor') ? '/supervisor/qms-inspector' : '/admin/qms-inspector';
@@ -368,7 +359,7 @@ const InspectionPlanNotifications = ({ dateRange, onCount }) => {
       // Handle ballooned drawing
       const docs = Array.isArray(docsRes.data) ? docsRes.data : [];
       const baloonDoc = docs
-        .filter(isBalloonOperationDocument)
+        .filter(isExportedInspectionPlanDocument)
         .sort((a, b) => Number(b?.id || 0) - Number(a?.id || 0))[0];
 
       if (baloonDoc) {
