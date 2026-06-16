@@ -9,8 +9,10 @@ import {
   EditOutlined,
   FilePdfOutlined,
   FileTextOutlined,
+  LeftOutlined,
   PrinterOutlined,
   ReloadOutlined,
+  RightOutlined,
   SaveOutlined,
   ZoomInOutlined,
   ZoomOutOutlined,
@@ -27,10 +29,13 @@ const { Text, Title } = Typography;
 
 const A4_WIDTH_PX = (210 / 25.4) * 96;
 const A4_HEIGHT_PX = (297 / 25.4) * 96;
-const ZOOM_STEPS = [0.45, 0.55, 0.65, 0.75, 0.85, 0.95, 1];
+const MIN_ZOOM = 0.25;
+const MAX_ZOOM = 2.5;
+const ZOOM_WHEEL_FACTOR = 1.1;
+const ZOOM_BUTTON_FACTOR = 1.15;
 
 function clampZoom(value) {
-  return Math.min(1, Math.max(0.4, value));
+  return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value));
 }
 
 function isPanBlockedTarget(target) {
@@ -45,8 +50,6 @@ export default function InspectionReportModal({
   target,
   projectName,
   assemblyName,
-  autoDownload = false,
-  onAutoDownloadDone,
   onClose,
 }) {
   const viewportRef = useRef(null);
@@ -63,13 +66,16 @@ export default function InspectionReportModal({
   const [manualZoom, setManualZoom] = useState(null);
   const [downloadingWord, setDownloadingWord] = useState(false);
   const [downloadingPdf, setDownloadingPdf] = useState(false);
+  const [exportProgress, setExportProgress] = useState(null);
   const [saving, setSaving] = useState(false);
   const [isDirty, setIsDirty] = useState(false);
   const editorRef = useRef(null);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
   const [handMode, setHandMode] = useState(false);
+  const [activePageIndex, setActivePageIndex] = useState(0);
   const hasCenteredRef = useRef(false);
+  const zoomStateRef = useRef({ fitZoom: 0.75, manualZoom: null });
 
   useEffect(() => {
     panRef.current = pan;
@@ -78,10 +84,6 @@ export default function InspectionReportModal({
   const applyPan = useCallback((next) => {
     panRef.current = next;
     setPan(next);
-    const stage = viewportRef.current?.querySelector('.ir-canvas-stage');
-    if (stage) {
-      stage.style.transform = `translate(${next.x}px, ${next.y}px)`;
-    }
   }, []);
 
   const {
@@ -101,12 +103,18 @@ export default function InspectionReportModal({
   });
 
   const displayPayload = payload;
+  const pageCount = displayPayload?.pages?.length ?? 1;
+  const isMultiPage = pageCount > 1;
 
   useEffect(() => {
     if (!open) {
       setIsDirty(false);
     }
   }, [open]);
+
+  useEffect(() => {
+    setActivePageIndex(0);
+  }, [reportQty, payload?.reportNo, payload?.totalQuantity]);
 
   useEffect(() => {
     if (!payload || loading) return;
@@ -119,7 +127,10 @@ export default function InspectionReportModal({
     const { width, height } = el.getBoundingClientRect();
     if (width < 80 || height < 80) return;
     const pad = 32;
-    const page = el.querySelector('#inspection-report-print-root');
+    const page = el.querySelector('.ir-print-page-slot--active .ir-a4-sheet')
+      || el.querySelector('.ir-print-carousel-slide:not([aria-hidden="true"]) .ir-a4-sheet')
+      || el.querySelector('#inspection-report-print-root .ir-a4-sheet')
+      || el.querySelector('#inspection-report-print-root');
     const neededH = page?.offsetHeight || A4_HEIGHT_PX;
     const scaleW = (width - pad) / A4_WIDTH_PX;
     const scaleH = (height - pad) / neededH;
@@ -133,11 +144,28 @@ export default function InspectionReportModal({
     if (!host) return;
     const vw = viewport.clientWidth;
     const vh = viewport.clientHeight;
-    const pw = host.offsetWidth;
-    const ph = host.offsetHeight;
+    const currentZoom = zoomStateRef.current.manualZoom ?? zoomStateRef.current.fitZoom;
+    const pw = host.offsetWidth * currentZoom;
+    const ph = host.offsetHeight * currentZoom;
     applyPan({
       x: Math.max(24, (vw - pw) / 2),
       y: Math.max(24, (vh - ph) / 2),
+    });
+    hasCenteredRef.current = true;
+  }, [applyPan]);
+
+  const applyZoomAtAnchor = useCallback((nextZoom, anchorX, anchorY) => {
+    const clamped = clampZoom(nextZoom);
+    const currentZoom = zoomStateRef.current.manualZoom ?? zoomStateRef.current.fitZoom;
+    if (Math.abs(clamped - currentZoom) < 0.001) return;
+    const pan = panRef.current;
+    const contentX = (anchorX - pan.x) / currentZoom;
+    const contentY = (anchorY - pan.y) / currentZoom;
+    zoomStateRef.current = { ...zoomStateRef.current, manualZoom: clamped };
+    setManualZoom(clamped);
+    applyPan({
+      x: anchorX - contentX * clamped,
+      y: anchorY - contentY * clamped,
     });
     hasCenteredRef.current = true;
   }, [applyPan]);
@@ -163,49 +191,112 @@ export default function InspectionReportModal({
     hasCenteredRef.current = false;
     const t = window.setTimeout(() => {
       recomputeFitZoom();
-      centerSheet();
+      if (zoomStateRef.current.manualZoom == null) {
+        centerSheet();
+      }
     }, 150);
     return () => window.clearTimeout(t);
   }, [open, payload, loading, reportQty, recomputeFitZoom, centerSheet]);
 
   useEffect(() => {
-    if (!open || !payload || loading) return undefined;
-    hasCenteredRef.current = false;
-    const t = window.setTimeout(centerSheet, 220);
-    return () => window.clearTimeout(t);
-  }, [open, payload, loading, manualZoom, fitZoom, centerSheet]);
-
-  useEffect(() => {
-    if (!autoDownload || !displayPayload || loading) return;
-    (async () => {
-      try {
-        setDownloadingWord(true);
-        await downloadDocx(displayPayload, { useSavedEdits: Boolean(displayPayload.savedAt) });
-      } finally {
-        setDownloadingWord(false);
-        onAutoDownloadDone?.();
-      }
-    })();
-  }, [autoDownload, displayPayload, loading, downloadDocx, onAutoDownloadDone]);
+    if (!open || !payload || loading || manualZoom != null) return undefined;
+    const id = requestAnimationFrame(() => centerSheet());
+    return () => cancelAnimationFrame(id);
+  }, [open, payload, loading, fitZoom, manualZoom, centerSheet]);
 
   const zoom = manualZoom ?? fitZoom;
   const zoomPct = Math.round(zoom * 100);
   const isFitMode = manualZoom == null;
 
+  useEffect(() => {
+    zoomStateRef.current = { fitZoom, manualZoom };
+  }, [fitZoom, manualZoom]);
+
   const nudgeZoom = (delta) => {
+    const viewport = viewportRef.current;
     const base = manualZoom ?? fitZoom;
-    const idx = ZOOM_STEPS.findIndex((s) => s >= base - 0.001);
-    const next = ZOOM_STEPS[Math.min(ZOOM_STEPS.length - 1, Math.max(0, (idx < 0 ? 0 : idx) + delta))];
-    setManualZoom(next ?? clampZoom(base + delta * 0.1));
+    const factor = delta > 0 ? ZOOM_BUTTON_FACTOR : 1 / ZOOM_BUTTON_FACTOR;
+    const next = clampZoom(base * factor);
+    if (!viewport) {
+      setManualZoom(next);
+      return;
+    }
+    applyZoomAtAnchor(next, viewport.clientWidth / 2, viewport.clientHeight / 2);
   };
 
   const handleFit = () => {
     setManualZoom(null);
-    window.setTimeout(() => {
+    hasCenteredRef.current = false;
+    requestAnimationFrame(() => {
       recomputeFitZoom();
-      centerSheet();
-    }, 0);
+      requestAnimationFrame(centerSheet);
+    });
   };
+
+  const goToPage = useCallback((nextIndex) => {
+    setActivePageIndex((prev) => {
+      const clamped = Math.max(0, Math.min(pageCount - 1, nextIndex));
+      return Number.isFinite(clamped) ? clamped : prev;
+    });
+    hasCenteredRef.current = false;
+    window.setTimeout(() => {
+      if (zoomStateRef.current.manualZoom == null) {
+        centerSheet();
+      }
+    }, 50);
+  }, [pageCount, centerSheet]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+
+    const onWheel = (event) => {
+      const viewport = viewportRef.current;
+      if (!viewport || !viewport.contains(event.target)) return;
+      if (event.target.closest('.ant-select-dropdown, .ir-sidebar, button, a, .ant-btn, input, textarea, select')) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      const { fitZoom: fit, manualZoom: manual } = zoomStateRef.current;
+      const current = manual ?? fit;
+      const factor = event.deltaY > 0 ? 1 / ZOOM_WHEEL_FACTOR : ZOOM_WHEEL_FACTOR;
+      const next = clampZoom(current * factor);
+      const rect = viewport.getBoundingClientRect();
+      applyZoomAtAnchor(next, event.clientX - rect.left, event.clientY - rect.top);
+    };
+
+    document.addEventListener('wheel', onWheel, { passive: false, capture: true });
+    return () => document.removeEventListener('wheel', onWheel, { capture: true });
+  }, [open, applyZoomAtAnchor]);
+
+  useEffect(() => {
+    if (!open || !isMultiPage) return undefined;
+    const onKeyDown = (event) => {
+      if (event.target.closest('input, textarea, select, [contenteditable="true"]')) return;
+      if (event.key === 'ArrowLeft') {
+        event.preventDefault();
+        goToPage(activePageIndex - 1);
+      } else if (event.key === 'ArrowRight') {
+        event.preventDefault();
+        goToPage(activePageIndex + 1);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [open, isMultiPage, activePageIndex, goToPage]);
+
+  useEffect(() => {
+    if (!open || !payload || loading) return undefined;
+    hasCenteredRef.current = false;
+    const t = window.setTimeout(() => {
+      if (zoomStateRef.current.manualZoom == null) {
+        centerSheet();
+      }
+    }, 80);
+    return () => window.clearTimeout(t);
+  }, [activePageIndex, open, payload, loading, centerSheet]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -309,12 +400,15 @@ export default function InspectionReportModal({
     }
     try {
       setDownloadingWord(true);
+      setExportProgress(null);
       await downloadDocx(displayPayload, { useSavedEdits: Boolean(displayPayload?.savedAt) });
+      message.success('Word report downloaded.');
     } catch (err) {
       console.error(err);
       message.error(err.response?.data?.detail || err.message || 'Word download failed');
     } finally {
       setDownloadingWord(false);
+      setExportProgress(null);
     }
   };
 
@@ -330,15 +424,33 @@ export default function InspectionReportModal({
     }
     try {
       setDownloadingPdf(true);
-      await downloadInspectionReportPdf(root, `Inspection_Report_${displayPayload.reportNo}.pdf`);
+      setExportProgress(null);
+      await downloadInspectionReportPdf(
+        root,
+        `Inspection_Report_${displayPayload.reportNo}.pdf`,
+        {
+          onProgress: ({ page, total }) => setExportProgress({ page, total }),
+        },
+      );
       message.success('PDF report downloaded.');
     } catch (err) {
       console.error(err);
       message.error(err.message || 'PDF download failed');
     } finally {
       setDownloadingPdf(false);
+      setExportProgress(null);
     }
   };
+
+  const isExporting = downloadingPdf || downloadingWord;
+  const exportTitle = downloadingPdf
+    ? 'Generating PDF'
+    : downloadingWord
+      ? 'Generating Word document'
+      : '';
+  const exportDetail = downloadingPdf && exportProgress?.total > 1
+    ? `Capturing page ${exportProgress.page} of ${exportProgress.total}…`
+    : 'Please wait, this may take a moment…';
 
   const partLabel = target?.partNumber || '—';
   const opLabel = target?.opNo ?? '—';
@@ -359,31 +471,33 @@ export default function InspectionReportModal({
     >
       <div className="ir-layout">
         <aside className="ir-sidebar">
-          <div className="ir-sidebar-header">
-            <Button
-              type="text"
-              icon={<ArrowLeftOutlined />}
-              className="ir-back-btn"
-              onClick={onClose}
-            >
-              Back
-            </Button>
-            <Button
-              type="text"
-              icon={<CloseOutlined />}
-              className="ir-close-btn"
-              aria-label="Close"
-              onClick={onClose}
-            />
-          </div>
-
-          <div className="ir-sidebar-brand">
-            <div className="ir-sidebar-brand-icon-wrap">
-              <FileTextOutlined className="ir-sidebar-brand-icon" />
+          <div className="ir-sidebar-panel ir-sidebar-panel--chrome">
+            <div className="ir-sidebar-header">
+              <Button
+                type="text"
+                icon={<ArrowLeftOutlined />}
+                className="ir-back-btn"
+                onClick={onClose}
+              >
+                Back
+              </Button>
+              <Button
+                type="text"
+                icon={<CloseOutlined />}
+                className="ir-close-btn"
+                aria-label="Close"
+                onClick={onClose}
+              />
             </div>
-            <div className="ir-sidebar-brand-text">
-              <Title level={5} className="ir-sidebar-title">Inspection Report</Title>
-              <Text type="secondary" className="ir-sidebar-subtitle">A4 editable preview</Text>
+
+            <div className="ir-sidebar-brand">
+              <div className="ir-sidebar-brand-icon-wrap">
+                <FileTextOutlined className="ir-sidebar-brand-icon" />
+              </div>
+              <div className="ir-sidebar-brand-text">
+                <Title level={5} className="ir-sidebar-title">Inspection Report</Title>
+                <Text type="secondary" className="ir-sidebar-subtitle">A4 editable preview</Text>
+              </div>
             </div>
           </div>
 
@@ -491,7 +605,7 @@ export default function InspectionReportModal({
             <div className="ir-zoom-toolbar">
               <Button
                 icon={<ZoomOutOutlined />}
-                disabled={zoom <= 0.4}
+                disabled={zoom <= MIN_ZOOM + 0.001}
                 onClick={() => nudgeZoom(-1)}
               />
               <button
@@ -504,7 +618,7 @@ export default function InspectionReportModal({
               </button>
               <Button
                 icon={<ZoomInOutlined />}
-                disabled={zoom >= 1}
+                disabled={zoom >= MAX_ZOOM - 0.001}
                 onClick={() => nudgeZoom(1)}
               />
               <Button
@@ -518,7 +632,9 @@ export default function InspectionReportModal({
           <Text type="secondary" className="ir-sidebar-footer-hint">
             {handMode
               ? 'Turn off Hand tool to edit cells.'
-              : 'Click cells to edit · grip bar to drag sheet.'}
+              : isMultiPage
+                ? 'Scroll to zoom · arrows to change page · grip to drag.'
+                : 'Scroll to zoom · click cells to edit · grip bar to drag.'}
           </Text>
         </aside>
 
@@ -539,29 +655,63 @@ export default function InspectionReportModal({
               ) : null}
             </div>
             <div className="ir-workspace-tools">
+              {isMultiPage ? (
+                <Text className="ir-workspace-page">
+                  Page {activePageIndex + 1} / {pageCount}
+                </Text>
+              ) : null}
               <Text className="ir-workspace-zoom">{isFitMode ? 'Fit' : `${zoomPct}%`}</Text>
             </div>
           </div>
 
           <div
             ref={viewportRef}
-            className={`ir-canvas-viewport${isPanning ? ' ir-canvas-viewport--panning' : ''}${handMode ? ' ir-canvas-viewport--hand' : ''}`}
+            className={`ir-canvas-viewport${isPanning ? ' ir-canvas-viewport--panning' : ''}${handMode ? ' ir-canvas-viewport--hand' : ''}${isMultiPage ? ' ir-canvas-viewport--carousel' : ''}`}
           >
+            {isMultiPage ? (
+              <>
+                <Button
+                  type="default"
+                  shape="circle"
+                  size="large"
+                  className="ir-page-nav ir-page-nav--prev"
+                  icon={<LeftOutlined />}
+                  disabled={activePageIndex <= 0 || loading}
+                  aria-label="Previous page"
+                  onClick={() => goToPage(activePageIndex - 1)}
+                />
+                <Button
+                  type="default"
+                  shape="circle"
+                  size="large"
+                  className="ir-page-nav ir-page-nav--next"
+                  icon={<RightOutlined />}
+                  disabled={activePageIndex >= pageCount - 1 || loading}
+                  aria-label="Next page"
+                  onClick={() => goToPage(activePageIndex + 1)}
+                />
+              </>
+            ) : null}
             <div
               className="ir-canvas-stage"
-              style={{ transform: `translate(${pan.x}px, ${pan.y}px)` }}
+              style={{
+                transform: `translate(${pan.x}px, ${pan.y}px) scale(${Number(zoom.toFixed(3))})`,
+                transformOrigin: '0 0',
+              }}
             >
               <Spin spinning={loading} wrapperClassName="ir-canvas-spin">
                 {displayPayload ? (
                   <InspectionReportEditor
                     ref={editorRef}
                     payload={displayPayload}
-                    zoom={zoom}
                     handMode={handMode}
+                    activePageIndex={activePageIndex}
                     onDirtyChange={setIsDirty}
                     onLayoutChange={() => {
                       recomputeFitZoom();
-                      if (!hasCenteredRef.current) centerSheet();
+                      if (zoomStateRef.current.manualZoom == null && !hasCenteredRef.current) {
+                        centerSheet();
+                      }
                     }}
                   />
                 ) : (
@@ -574,6 +724,16 @@ export default function InspectionReportModal({
           </div>
         </section>
       </div>
+
+      {isExporting ? (
+        <div className="ir-export-overlay" role="status" aria-live="polite" aria-busy="true">
+          <div className="ir-export-overlay-card">
+            <Spin size="large" />
+            <Title level={4} className="ir-export-overlay-title">{exportTitle}</Title>
+            <Text type="secondary" className="ir-export-overlay-detail">{exportDetail}</Text>
+          </div>
+        </div>
+      ) : null}
     </Modal>
   );
 }

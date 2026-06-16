@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Layout, Button, Modal, Table, Spin, Drawer, message, Select, Alert, Tooltip, Tabs, Input, Card, Tag, Typography, Empty, Space } from 'antd';
 import { useNavigate, useSearchParams, useLocation } from 'react-router-dom';
 import { MenuOutlined, AppstoreOutlined, ShoppingCartOutlined, ClusterOutlined, ToolOutlined, InfoCircleOutlined, EyeOutlined, BuildOutlined, CheckCircleOutlined, CloudDownloadOutlined, EditOutlined, FilePdfOutlined, LeftOutlined, RightOutlined } from "@ant-design/icons";
@@ -9,6 +9,7 @@ import InteractiveDrawing from './InspectorComponents/InteractiveDrawing';
 import { parseMasterBocBboxToPdfRect } from './InspectorComponents/bocMappers';
 import { resolveBaseDrawingDocument } from './InspectorComponents/drawingDocumentUtils';
 import InspectionReportModal from './InspectionReport/InspectionReportModal';
+import { downloadInspectionReportWord } from './InspectionReport/downloadInspectionReportWord';
 
 
 const { Sider, Content } = Layout;
@@ -183,8 +184,24 @@ const QM_PLAN_VIEW_TABLE_STYLES = `
   .qm-plan-view-table .plan-row-odd > td {
     background: #fafbfc !important;
   }
-  .qm-plan-view-table .ant-table-pagination {
-    margin: 6px 0 2px !important;
+  .qm-plan-view-boc-body {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    padding: 0 6px 6px;
+    display: flex;
+    flex-direction: column;
+  }
+  .qm-plan-view-boc-body .ant-spin-nested-loading,
+  .qm-plan-view-boc-body .ant-spin-container {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .qm-plan-view-boc-body .qm-plan-view-table {
+    flex: 1;
+    min-height: 0;
   }
 `;
 
@@ -242,6 +259,8 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
   const [planViewOperationRecord, setPlanViewOperationRecord] = useState(null);
   const [planBalloonDocumentId, setPlanBalloonDocumentId] = useState(null);
   const [activeBalloonId, setActiveBalloonId] = useState(null);
+  const planBocBodyRef = useRef(null);
+  const [planBocTableScrollY, setPlanBocTableScrollY] = useState(undefined);
   const [measureModalOpen, setMeasureModalOpen] = useState(false);
   const [measureModalLoading, setMeasureModalLoading] = useState(false);
   const [measureRows, setMeasureRows] = useState([]);
@@ -252,6 +271,23 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
   useEffect(() => {
     setMeasureQtyInput(String(measureQty));
   }, [measureQty]);
+
+  useEffect(() => {
+    if (!planViewOpen) {
+      setPlanBocTableScrollY(undefined);
+      return undefined;
+    }
+    const el = planBocBodyRef.current;
+    if (!el) return undefined;
+    const update = () => {
+      const next = Math.max(0, Math.floor(el.clientHeight) - 40);
+      setPlanBocTableScrollY((prev) => (prev === next ? prev : next));
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [planViewOpen, planViewLoading, planTableRows.length]);
 
   const handleMeasureQtySubmit = () => {
     const val = (measureQtyInput || '').trim();
@@ -287,7 +323,8 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
   const [partInspectionSummaryByOp, setPartInspectionSummaryByOp] = useState({});
 
   const [reportTarget, setReportTarget] = useState(null);
-  const [reportAutoDownload, setReportAutoDownload] = useState(false);
+  const [reportWordDownloading, setReportWordDownloading] = useState(false);
+  const [reportWordDownloadingOp, setReportWordDownloadingOp] = useState(null);
   const [measurePartMode, setMeasurePartMode] = useState(false);
   const [measurePartOps, setMeasurePartOps] = useState([]);
 
@@ -409,6 +446,35 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
     });
   };
 
+  const handleDownloadReport = async (record) => {
+    const opNo = parseOpNo(record);
+    if (isSupervisorView && inspectionPlanByOp[opNo] !== 'confirmed') {
+      message.warning('Please confirm the inspection plan before downloading the report.');
+      return;
+    }
+    const oid = Number(effectiveOrderId);
+    if (!selectedItem?.id || !oid || !selectedItem.part_number) {
+      message.warning('Part and order are required to download the report.');
+      return;
+    }
+    try {
+      setReportWordDownloading(true);
+      setReportWordDownloadingOp(opNo);
+      await downloadInspectionReportWord({
+        partNumber: selectedItem.part_number,
+        orderId: oid,
+        opNo,
+      });
+      message.success('Word report downloaded successfully.');
+    } catch (err) {
+      console.error(err);
+      message.error(err.message || 'Word download failed.');
+    } finally {
+      setReportWordDownloading(false);
+      setReportWordDownloadingOp(null);
+    }
+  };
+
   useEffect(() => {
     const oid = effectiveOrderId;
     if (oid && String(oid) !== 'null') {
@@ -466,7 +532,43 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
       ]);
       const ops = opsRes.data || [];
       const docs = docsRes.data || [];
-      setOperations(ops);
+
+      let productionSummaryByOpId = {};
+      try {
+        const summaryRes = await axios.get(
+          `${QUALITY_API_BASE_URL}/quality/operation-production-summary`,
+          { params: { part_id: partId } },
+        );
+        productionSummaryByOpId = Object.fromEntries(
+          (Array.isArray(summaryRes.data) ? summaryRes.data : []).map((row) => [
+            row.operation_id,
+            row,
+          ]),
+        );
+      } catch (summaryErr) {
+        console.warn('Operation production summary unavailable:', summaryErr);
+      }
+
+      const enrichedOps = ops.map((op) => {
+        const summary = productionSummaryByOpId[op.id];
+        if (!summary) {
+          const partQty = Number(item.qty);
+          if (Number.isFinite(partQty) && partQty > 0) {
+            return { ...op, required_quantity: partQty };
+          }
+          return op;
+        }
+        return {
+          ...op,
+          required_quantity: summary.required_quantity,
+          completed_quantity: summary.completed_quantity,
+          accepted_quantity: summary.accepted_quantity,
+          rejected_quantity: summary.rejected_quantity,
+          yield_percentage: summary.yield_percentage,
+        };
+      });
+
+      setOperations(enrichedOps);
       setPartDocuments(docs);
 
       const oid = effectiveOrderId && String(effectiveOrderId) !== 'null' ? Number(effectiveOrderId) : null;
@@ -1791,6 +1893,7 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                                   key: 'required_quantity',
                                   width: 68,
                                   align: 'center',
+                                  render: (val) => (val != null && val !== '' ? val : '—'),
                                 },
                                 {
                                   title: 'Comp qty',
@@ -1798,6 +1901,7 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                                   key: 'completed_quantity',
                                   width: 68,
                                   align: 'center',
+                                  render: (val) => (val != null && val !== '' ? val : '—'),
                                 },
                                 {
                                   title: 'Acpt qty',
@@ -1805,6 +1909,7 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                                   key: 'accepted_quantity',
                                   width: 68,
                                   align: 'center',
+                                  render: (val) => (val != null && val !== '' ? val : '—'),
                                 },
                                 {
                                   title: 'Rej qty',
@@ -1812,6 +1917,7 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                                   key: 'rejected_quantity',
                                   width: 68,
                                   align: 'center',
+                                  render: (val) => (val != null && val !== '' ? val : '—'),
                                 },
                                 {
                                   title: 'Yield %',
@@ -1819,11 +1925,17 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                                   key: 'yield_percentage',
                                   width: 64,
                                   align: 'center',
-                                  render: val => (
-                                    <Text style={{ color: val >= 95 ? '#52c41a' : val < 80 ? '#f5222d' : '#faad14', fontWeight: 'bold' }}>
-                                      {val ? `${val}%` : '0%'}
-                                    </Text>
-                                  ),
+                                  render: (val) => {
+                                    if (val == null || val === '') {
+                                      return <Text type="secondary">—</Text>;
+                                    }
+                                    const n = Number(val);
+                                    return (
+                                      <Text style={{ color: n >= 95 ? '#52c41a' : n < 80 ? '#f5222d' : '#faad14', fontWeight: 'bold' }}>
+                                        {`${n}%`}
+                                      </Text>
+                                    );
+                                  },
                                 },
                                 {
                                   title: 'Actions',
@@ -1842,10 +1954,9 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                                       <Button
                                         size="small"
                                         icon={<CloudDownloadOutlined />}
-                                        onClick={() => {
-                                          setReportAutoDownload(true);
-                                          handleGenerateReport(record);
-                                        }}
+                                        loading={reportWordDownloading && reportWordDownloadingOp === parseOpNo(record)}
+                                        disabled={reportWordDownloading}
+                                        onClick={() => void handleDownloadReport(record)}
                                       >
                                         Download
                                       </Button>
@@ -1872,7 +1983,7 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                 styles={{ body: { padding: 12, height: '80vh', background: '#f7f8fa' } }}
               >
                 <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.05fr) minmax(0, 1.35fr)', gap: 12, height: '100%', alignItems: 'stretch', fontFamily: '"JetBrains Mono", "Consolas", "Courier New", monospace' }}>
-                  <div style={{ border: '1px solid #dfe4ea', borderRadius: 10, overflow: 'hidden', background: '#fff', display: 'flex', flexDirection: 'column', alignSelf: 'start', maxHeight: '100%', boxShadow: '0 2px 10px rgba(15,23,42,0.04)' }}>
+                  <div style={{ border: '1px solid #dfe4ea', borderRadius: 10, overflow: 'hidden', background: '#fff', display: 'flex', flexDirection: 'column', minHeight: 0, height: '100%', boxShadow: '0 2px 10px rgba(15,23,42,0.04)' }}>
                     <div style={{ padding: '10px 12px', borderBottom: '1px solid #eef0f3', background: '#fafbfc', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
                       <div style={{ flex: 1, minWidth: 0 }}>
                       <Text strong style={{ color: '#111827', fontSize: 18, lineHeight: 1.2, fontFamily: '"JetBrains Mono", "Consolas", "Courier New", monospace' }}>Inspection Details</Text>
@@ -1888,7 +1999,7 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                         </Button>
                       )}
                     </div>
-                    <div style={{ padding: '0 6px 6px', flex: '0 1 auto', maxHeight: 'calc(80vh - 88px)', overflow: 'auto' }}>
+                    <div ref={planBocBodyRef} className="qm-plan-view-boc-body">
                       <style>{QM_PLAN_VIEW_TABLE_STYLES}</style>
                       <Table
                         className="qm-plan-view-table"
@@ -1896,12 +2007,12 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                         loading={planViewLoading}
                         dataSource={planTableRows}
                         rowKey="id"
-                        pagination={
-                          planTableRows.length > 12
-                            ? { pageSize: 12, showSizeChanger: false, size: 'small' }
-                            : false
+                        pagination={false}
+                        scroll={
+                          planBocTableScrollY
+                            ? { x: 'max-content', y: planBocTableScrollY }
+                            : { x: 'max-content' }
                         }
-                        scroll={planTableRows.length > 12 ? { y: 360 } : undefined}
                         tableLayout="fixed"
                         rowClassName={(_, idx) => (idx % 2 === 0 ? 'plan-row-even' : 'plan-row-odd')}
                         onRow={(record) => ({
@@ -1955,7 +2066,7 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                       />
                     </div>
                   </div>
-                  <div style={{ border: '1px solid #dfe4ea', borderRadius: 10, overflow: 'hidden', background: '#fff', display: 'flex', flexDirection: 'column', boxShadow: '0 2px 10px rgba(15,23,42,0.04)' }}>
+                  <div style={{ border: '1px solid #dfe4ea', borderRadius: 10, overflow: 'hidden', background: '#fff', display: 'flex', flexDirection: 'column', minHeight: 0, height: '100%', boxShadow: '0 2px 10px rgba(15,23,42,0.04)' }}>
                     <div style={{ padding: '10px 14px', borderBottom: '1px solid #eef0f3', background: '#fafbfc', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                       <Text strong style={{ color: '#111827', fontFamily: '"JetBrains Mono", "Consolas", "Courier New", monospace' }}>Drawing View</Text>
                       <Button size="small" icon={<CloudDownloadOutlined />} onClick={handleDownloadPlanDrawing} disabled={!planDrawingUrl}>
@@ -2578,13 +2689,46 @@ const QualityManagement = ({ initialProductId, initialOrderId, fromOms }) => {
                 target={reportTarget}
                 projectName={reportTarget ? (productHierarchies[selectedItem?.productId]?.product?.product_name || '') : ''}
                 assemblyName={selectedItem?.assembly_name || 'Main'}
-                autoDownload={reportAutoDownload}
-                onAutoDownloadDone={() => setReportAutoDownload(false)}
                 onClose={() => {
                   setReportTarget(null);
-                  setReportAutoDownload(false);
                 }}
               />
+
+              {reportWordDownloading ? (
+                <div
+                  role="status"
+                  aria-live="polite"
+                  aria-busy="true"
+                  style={{
+                    position: 'fixed',
+                    inset: 0,
+                    zIndex: 2000,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    background: 'rgba(15, 23, 42, 0.45)',
+                    backdropFilter: 'blur(4px)',
+                  }}
+                >
+                  <div
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      gap: 12,
+                      minWidth: 280,
+                      padding: '32px 40px',
+                      borderRadius: 16,
+                      background: '#fff',
+                      boxShadow: '0 24px 48px rgba(15, 23, 42, 0.18)',
+                    }}
+                  >
+                    <Spin size="large" />
+                    <Title level={4} style={{ margin: 0 }}>Generating Word document</Title>
+                    <Text type="secondary">Please wait, your report is being prepared…</Text>
+                  </div>
+                </div>
+              ) : null}
             </div>
           ) : (
             <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', background: '#fff', borderRadius: '12px', border: '1px solid #f0f0f0' }}>

@@ -197,7 +197,6 @@ export function useInspectionReport({ target, projectName, assemblyName, enabled
     link.download = `Inspection_Report_${p.reportNo}.docx`;
     link.click();
     URL.revokeObjectURL(url);
-    message.success('Word report downloaded.');
   }, [target, payload, reportQty]);
 
   return {

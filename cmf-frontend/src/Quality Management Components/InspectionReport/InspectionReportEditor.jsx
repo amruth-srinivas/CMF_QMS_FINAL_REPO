@@ -7,7 +7,11 @@ import { TableCell } from '@tiptap/extension-table-cell';
 import { TableHeader } from '@tiptap/extension-table-header';
 import TextAlign from '@tiptap/extension-text-align';
 import { HolderOutlined } from '@ant-design/icons';
-import { buildReportDocumentHtml, computeReportLayoutMm } from './reportDocumentBuilder';
+import {
+  buildEditorPagePayload,
+  buildReportDocumentHtml,
+  computeReportLayoutMm,
+} from './reportDocumentBuilder';
 import cmtiReportLogo from '../../assets/cmti-report-logo.png';
 
 function classAttr() {
@@ -106,27 +110,26 @@ function ReportBannerHeader() {
 const ReportSheetEditor = forwardRef(function ReportSheetEditor(
   {
     payload,
-    sheetIndex = 0,
+    pageIndex = 0,
     printRootId,
     showPanHandle = true,
-    zoom = 1,
     handMode = false,
     onDirtyChange,
     onLayoutChange,
-    isStacked = false,
+    embedded = false,
+    qtyGroupStart = false,
   },
   ref,
 ) {
   const html = useMemo(() => buildReportDocumentHtml(payload), [payload]);
   const layout = useMemo(() => computeReportLayoutMm(payload), [payload]);
   const contentKey = payload
-    ? `${payload.reportNo}-${payload.totalQuantity}-${payload.sheet}-${payload.savedAt || ''}-${sheetIndex}`
+    ? `${payload.reportNo}-${payload.totalQuantity}-${payload.sheet}-${payload.showFooter}-${payload.savedAt || ''}-${pageIndex}`
     : 'empty';
   const pageRef = useRef(null);
   const skipDirtyRef = useRef(false);
   const onDirtyChangeRef = useRef(onDirtyChange);
   const onLayoutChangeRef = useRef(onLayoutChange);
-  const [pageSize, setPageSize] = useState({ w: 0, h: 0 });
 
   useEffect(() => {
     onDirtyChangeRef.current = onDirtyChange;
@@ -177,8 +180,8 @@ const ReportSheetEditor = forwardRef(function ReportSheetEditor(
   useImperativeHandle(ref, () => ({
     getHtml: () => editor?.getHTML?.() || '',
     getQty: () => payload?.totalQuantity || payload?.qty,
-    getSheetIndex: () => sheetIndex,
-  }), [editor, payload, sheetIndex]);
+    getPageIndex: () => pageIndex,
+  }), [editor, payload, pageIndex]);
 
   useEffect(() => {
     if (!editor || !payload) return;
@@ -198,9 +201,6 @@ const ReportSheetEditor = forwardRef(function ReportSheetEditor(
       const root = pageRef.current;
       if (root) {
         applySheetLayout(root, layout);
-        const w = root.offsetWidth;
-        const h = root.offsetHeight;
-        setPageSize({ w, h });
         onLayoutChangeRef.current?.();
       }
     };
@@ -219,26 +219,19 @@ const ReportSheetEditor = forwardRef(function ReportSheetEditor(
     const root = pageRef.current;
     if (!root || typeof ResizeObserver === 'undefined') return undefined;
     const ro = new ResizeObserver(() => {
-      setPageSize({ w: root.offsetWidth, h: root.offsetHeight });
       onLayoutChangeRef.current?.();
     });
     ro.observe(root);
     return () => ro.disconnect();
   }, [contentKey]);
 
-  const PAN_HANDLE_H = showPanHandle && !isStacked ? 48 : 0;
-  const hostW = pageSize.w > 0 ? pageSize.w * zoom : undefined;
-  const hostH = pageSize.h > 0 ? pageSize.h * zoom + PAN_HANDLE_H : undefined;
-
   const pageBody = (
     <div
       ref={pageRef}
       id={printRootId}
-      className={`ir-page ir-a4-sheet${isStacked ? ' ir-a4-sheet--stacked' : ''}`}
-      style={isStacked ? undefined : {
-        transform: `scale(${Number(zoom.toFixed(3))})`,
-        transformOrigin: 'top left',
-      }}
+      className={`ir-page ir-a4-sheet${embedded ? ' ir-a4-sheet--embedded' : ''}${qtyGroupStart ? ' ir-a4-sheet--qty-start' : ''}`}
+      data-qty={payload?.totalQuantity ?? ''}
+      data-page-index={pageIndex}
     >
       <div className="ir-sheet-stack">
         <ReportBannerHeader />
@@ -247,18 +240,12 @@ const ReportSheetEditor = forwardRef(function ReportSheetEditor(
     </div>
   );
 
-  if (isStacked) {
+  if (embedded) {
     return pageBody;
   }
 
   return (
-    <div
-      className={`ir-zoom-host${handMode ? ' ir-zoom-host--hand' : ''}`}
-      style={{
-        width: hostW ?? `calc(210mm * ${zoom})`,
-        height: hostH ?? `calc(297mm * ${zoom})`,
-      }}
-    >
+    <div className={`ir-zoom-host${handMode ? ' ir-zoom-host--hand' : ''}`}>
       {showPanHandle ? (
         <div
           className="ir-sheet-pan-handle"
@@ -274,92 +261,128 @@ const ReportSheetEditor = forwardRef(function ReportSheetEditor(
   );
 });
 
+function renderPageEditor({
+  payload,
+  page,
+  index,
+  pageRefs,
+  handMode,
+  onDirtyChange,
+  onLayoutChange,
+  embedded = false,
+  qtyGroupStart = false,
+}) {
+  const pagePayload = buildEditorPagePayload(payload, page);
+  return (
+    <ReportSheetEditor
+      key={`page-${page.pageIndex ?? index}-${page.sheet ?? index}-qty-${page.qty ?? page.totalQuantity ?? index}`}
+      ref={(el) => {
+        pageRefs.current[index] = el;
+      }}
+      payload={pagePayload}
+      pageIndex={page.pageIndex ?? index}
+      showPanHandle={false}
+      handMode={handMode}
+      onDirtyChange={onDirtyChange}
+      onLayoutChange={onLayoutChange}
+      embedded={embedded}
+      qtyGroupStart={qtyGroupStart}
+    />
+  );
+}
+
 const InspectionReportEditor = forwardRef(function InspectionReportEditor(
-  { payload, zoom = 1, handMode = false, onLayoutChange, onDirtyChange },
+  {
+    payload,
+    handMode = false,
+    activePageIndex = 0,
+    onLayoutChange,
+    onDirtyChange,
+  },
   ref,
 ) {
-  const sheetRefs = useRef([]);
-  const isMultiSheet = Boolean(payload?.sheets?.length);
+  const pageRefs = useRef([]);
+  const reportPages = payload?.pages?.length ? payload.pages : null;
+  const isMultiPage = Boolean(reportPages && reportPages.length > 1);
 
   useImperativeHandle(ref, () => ({
     getHtml: () => {
-      if (isMultiSheet) {
-        return sheetRefs.current
+      if (reportPages?.length) {
+        return pageRefs.current
           .filter(Boolean)
-          .sort((a, b) => (a.getSheetIndex?.() ?? 0) - (b.getSheetIndex?.() ?? 0))
-          .map((sheetRef) => {
-            const index = sheetRef.getSheetIndex?.() ?? 0;
-            const qty = sheetRef.getQty?.() ?? index + 1;
-            const inner = sheetRef.getHtml?.() || '';
-            return `<div class="ir-consolidated-sheet" data-sheet-index="${index}" data-qty="${qty}">${inner}</div>`;
+          .sort((a, b) => (a.getPageIndex?.() ?? 0) - (b.getPageIndex?.() ?? 0))
+          .map((pageRefItem) => {
+            const index = pageRefItem.getPageIndex?.() ?? 0;
+            const qty = pageRefItem.getQty?.() ?? '';
+            const inner = pageRefItem.getHtml?.() || '';
+            return `<div class="ir-report-page" data-page-index="${index}" data-qty="${qty}">${inner}</div>`;
           })
           .join('');
       }
-      return sheetRefs.current[0]?.getHtml?.() || '';
+      return pageRefs.current[0]?.getHtml?.() || '';
     },
-  }), [isMultiSheet]);
+  }), [reportPages]);
 
-  if (isMultiSheet) {
+  if (reportPages?.length) {
+    if (isMultiPage) {
+      const safeIndex = Math.max(0, Math.min(reportPages.length - 1, activePageIndex));
+      return (
+        <div className={`ir-zoom-host ir-zoom-host--paged${handMode ? ' ir-zoom-host--hand' : ''}`}>
+          <div
+            className="ir-sheet-pan-handle"
+            data-ir-pan-handle
+            title="Drag to move sheet"
+          >
+            <HolderOutlined />
+            <span>Drag to move</span>
+          </div>
+          <div id="inspection-report-print-root" className="ir-print-pages-root">
+            {reportPages.map((page, index) => (
+              <div
+                key={`page-slot-${page.pageIndex ?? index}-${page.sheet ?? index}`}
+                className={`ir-print-page-slot${index === safeIndex ? ' ir-print-page-slot--active' : ''}`}
+                aria-hidden={index !== safeIndex}
+              >
+                {renderPageEditor({
+                  payload,
+                  page,
+                  index,
+                  pageRefs,
+                  handMode,
+                  onDirtyChange,
+                  onLayoutChange,
+                  embedded: true,
+                  qtyGroupStart: Boolean(page.qtyGroupStart),
+                })}
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    const page = reportPages[0];
     return (
-      <div
-        className={`ir-zoom-host ir-zoom-host--stack${handMode ? ' ir-zoom-host--hand' : ''}`}
-        style={{ width: `calc(210mm * ${zoom})` }}
-      >
-        <div
-          className="ir-sheet-pan-handle"
-          data-ir-pan-handle
-          title="Drag to move sheets"
-        >
-          <HolderOutlined />
-          <span>Drag to move</span>
-        </div>
-        <div
-          id="inspection-report-print-root"
-          className="ir-print-stack"
-          style={{
-            transform: `scale(${Number(zoom.toFixed(3))})`,
-            transformOrigin: 'top left',
-          }}
-        >
-          {payload.sheets.map((sheet, index) => {
-            const sheetPayload = {
-              ...payload,
-              ...sheet,
-              rows: sheet.rows,
-              isConsolidated: false,
-              footerRows: sheet.footerRows ?? payload.footerRows,
-              inspectedBy: sheet.inspectedBy ?? payload.inspectedBy,
-              checkedBy: sheet.checkedBy ?? payload.checkedBy,
-            };
-            return (
-              <ReportSheetEditor
-                key={`sheet-${sheet.qty}`}
-                ref={(el) => {
-                  sheetRefs.current[index] = el;
-                }}
-                payload={sheetPayload}
-                sheetIndex={index}
-                showPanHandle={false}
-                handMode={handMode}
-                onDirtyChange={onDirtyChange}
-                onLayoutChange={onLayoutChange}
-                isStacked
-              />
-            );
-          })}
-        </div>
-      </div>
+      <ReportSheetEditor
+        ref={(el) => {
+          pageRefs.current[0] = el;
+        }}
+        payload={buildEditorPagePayload(payload, page)}
+        printRootId="inspection-report-print-root"
+        handMode={handMode}
+        onDirtyChange={onDirtyChange}
+        onLayoutChange={onLayoutChange}
+      />
     );
   }
 
   return (
     <ReportSheetEditor
       ref={(el) => {
-        sheetRefs.current[0] = el;
+        pageRefs.current[0] = el;
       }}
       payload={payload}
       printRootId="inspection-report-print-root"
-      zoom={zoom}
       handMode={handMode}
       onDirtyChange={onDirtyChange}
       onLayoutChange={onLayoutChange}

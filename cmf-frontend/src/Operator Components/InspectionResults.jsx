@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button, Card, ConfigProvider, Empty, Modal, Space, Spin, Table, Tag, Typography, message } from 'antd';
 import {
@@ -92,6 +92,25 @@ const InspectionResults = () => {
   const [planDrawingEndpoint, setPlanDrawingEndpoint] = useState(null);
   const [activeBalloonId, setActiveBalloonId] = useState(null);
   const [planViewMeta, setPlanViewMeta] = useState(null);
+  const planBocBodyRef = useRef(null);
+  const [planBocTableScrollY, setPlanBocTableScrollY] = useState(undefined);
+
+  useEffect(() => {
+    if (!planViewOpen) {
+      setPlanBocTableScrollY(undefined);
+      return undefined;
+    }
+    const el = planBocBodyRef.current;
+    if (!el) return undefined;
+    const update = () => {
+      const next = Math.max(0, Math.floor(el.clientHeight) - 40);
+      setPlanBocTableScrollY((prev) => (prev === next ? prev : next));
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [planViewOpen, planViewLoading, planTableRows.length]);
 
   const planInteractiveBalloons = useMemo(() => {
     return (planTableRows || [])
@@ -532,8 +551,8 @@ const InspectionResults = () => {
         open={planViewOpen}
         styles={{ body: { padding: 12, height: '80vh', background: '#f7f8fa' } }}
       >
-        <div style={{ display: 'grid', gridTemplateColumns: '1.45fr 1fr', gap: 14, height: '100%', ...monoStyle }}>
-          <div style={{ border: '1px solid #dfe4ea', borderRadius: 10, overflow: 'hidden', background: '#fff', display: 'flex', flexDirection: 'column', boxShadow: '0 2px 10px rgba(15,23,42,0.04)' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.05fr) minmax(0, 1.35fr)', gap: 12, height: '100%', alignItems: 'stretch', ...monoStyle }}>
+          <div style={{ border: '1px solid #dfe4ea', borderRadius: 10, overflow: 'hidden', background: '#fff', display: 'flex', flexDirection: 'column', minHeight: 0, height: '100%', boxShadow: '0 2px 10px rgba(15,23,42,0.04)' }}>
             <div style={{ padding: '14px 16px', borderBottom: '1px solid #eef0f3', background: '#fafbfc' }}>
               <Text strong style={{ color: '#111827', fontSize: 22, lineHeight: 1.2, ...monoStyle }}>Inspection Details</Text>
               <div style={{ marginTop: 10, fontSize: 16, color: '#374151' }}>
@@ -542,14 +561,18 @@ const InspectionResults = () => {
                 <Text style={{ fontSize: 16, marginLeft: 18, ...monoStyle }}><b>Operation:</b> {planViewMeta?.opNo || '—'}</Text>
               </div>
             </div>
-            <div style={{ padding: '0 10px 10px', flex: 1, minHeight: 0 }}>
+            <div ref={planBocBodyRef} style={{ padding: '0 10px 10px', flex: 1, minHeight: 0, overflow: 'hidden' }}>
               <Table
                 size="small"
                 loading={planViewLoading}
                 dataSource={planTableRows}
                 rowKey="id"
-                pagination={{ pageSize: 14, showSizeChanger: false }}
-                scroll={{ x: 'max-content', y: 520 }}
+                pagination={false}
+                scroll={
+                  planBocTableScrollY
+                    ? { x: 'max-content', y: planBocTableScrollY }
+                    : { x: 'max-content' }
+                }
                 columns={[
                   { title: 'S.No', key: 'sno', width: 82, render: (_, __, idx) => <Text style={{ ...monoStyle, fontSize: 13 }}>{idx + 1}</Text> },
                   { title: 'Zone', dataIndex: 'zone', key: 'zone', width: 90, render: (z) => <Tag color="geekblue" style={{ margin: 0, borderRadius: 10, ...monoStyle }}>{z || '—'}</Tag> },
@@ -582,7 +605,7 @@ const InspectionResults = () => {
               />
             </div>
           </div>
-          <div style={{ border: '1px solid #dfe4ea', borderRadius: 10, overflow: 'hidden', background: '#fff', display: 'flex', flexDirection: 'column', boxShadow: '0 2px 10px rgba(15,23,42,0.04)' }}>
+          <div style={{ border: '1px solid #dfe4ea', borderRadius: 10, overflow: 'hidden', background: '#fff', display: 'flex', flexDirection: 'column', minHeight: 0, height: '100%', boxShadow: '0 2px 10px rgba(15,23,42,0.04)' }}>
             <div style={{ padding: '10px 14px', borderBottom: '1px solid #eef0f3', background: '#fafbfc', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <Text strong style={{ color: '#111827', ...monoStyle }}>Drawing View</Text>
               <Button size="small" icon={<CloudDownloadOutlined />} onClick={handleDownloadPlanDrawing} disabled={!planDrawingUrl}>

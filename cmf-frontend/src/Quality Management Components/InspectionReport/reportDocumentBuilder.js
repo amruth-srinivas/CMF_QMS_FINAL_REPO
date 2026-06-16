@@ -52,6 +52,43 @@ export function buildReportRows({ chars, outcomes, consolidated }) {
   return buildRowsForOutcome(chars, outcomes[0]);
 }
 
+/** Average numeric measured values; empty string if none are numeric. */
+export function averageMeasurements(measurements) {
+  const nums = (measurements || [])
+    .map((v) => {
+      if (v === '' || v == null) return NaN;
+      const n = Number(String(v).trim());
+      return Number.isFinite(n) ? n : NaN;
+    })
+    .filter((n) => Number.isFinite(n));
+  if (!nums.length) return '';
+  const avg = nums.reduce((sum, n) => sum + n, 0) / nums.length;
+  const rounded = Math.round(avg * 1000) / 1000;
+  return Number.isInteger(rounded) ? String(rounded) : String(rounded);
+}
+
+/** One row per characteristic with per-quantity measurement averages. */
+export function buildConsolidatedRows(qtyGroups) {
+  if (!qtyGroups?.length) return [];
+  const charCount = qtyGroups[0].rows?.length ?? 0;
+  const rows = [];
+  for (let i = 0; i < charCount; i += 1) {
+    const first = qtyGroups[0].rows[i];
+    const qtyAverages = qtyGroups.map((group) =>
+      averageMeasurements(group.rows[i]?.measurements),
+    );
+    rows.push({
+      sno: first.sno,
+      specified: first.specified,
+      zone: first.zone,
+      qtyAverages,
+      instrument: first.instrument,
+      remarks: first.remarks || '',
+    });
+  }
+  return rows;
+}
+
 export function buildReportPayload({
   reportRows,
   reportQty,
@@ -75,39 +112,46 @@ export function buildReportPayload({
   };
 
   if (isConsolidated) {
-    const sheetSources = reportRows;
-    const totalSheets = sheetSources.length;
-    const sheets = sheetSources.map((source, index) => {
-      const rows = source.rows || [];
-      const maxSamples = Math.max(3, ...rows.map((r) => (r.measurements || []).length), 0);
-      return {
-        qty: source.qty,
-        rows,
-        sheet: `${index + 1} of ${totalSheets}`,
-        totalQuantity: String(source.qty),
-        maxSamples,
-        totalCols: computeTableColumnLayout(false, maxSamples).totalCols,
-      };
+    const qtyGroups = reportRows;
+    const quantityCount = qtyGroups.length;
+    const consolidatedRows = buildConsolidatedRows(qtyGroups);
+    const consolidatedTotalQuantity = quantityCount > 1 ? `All (1–${quantityCount})` : '1';
+    const pages = buildPageList([{ rows: consolidatedRows }], {
+      ...shared,
+      totalQuantity: consolidatedTotalQuantity,
+    }, {
+      isConsolidated: true,
+      quantityCount,
     });
-    const maxSamples = Math.max(3, ...sheets.map((s) => s.maxSamples), 0);
+    const colLayout = computeTableColumnLayout(true, quantityCount);
     return {
       ...shared,
       isConsolidated: true,
-      sheets,
-      rows: sheets.flatMap((s) => s.rows),
-      maxSamples,
-      totalCols: computeTableColumnLayout(false, maxSamples).totalCols,
-      sheet: totalSheets > 1 ? `1 of ${totalSheets}` : '1 of 1',
-      totalQuantity: totalSheets > 1 ? `All (1–${totalSheets})` : '1',
+      quantityCount,
+      pages,
+      sheets: qtyGroups.map((source) => ({
+        qty: source.qty,
+        rows: source.rows,
+        totalQuantity: String(source.qty),
+      })),
+      rows: consolidatedRows,
+      maxSamples: quantityCount,
+      totalCols: colLayout.totalCols,
+      sheet: pages.length > 1 ? `1 of ${pages.length}` : '1 of 1',
+      totalQuantity: consolidatedTotalQuantity,
     };
   }
 
   const rows = Array.isArray(reportRows) ? reportRows : [];
-  const maxSamples = Math.max(3, ...rows.map((r) => (r.measurements || []).length), 0);
+  const pages = buildPageList([{ rows }], { ...shared, totalQuantity: String(reportQty) }, {
+    qty: reportQty,
+  });
+  const maxSamples = Math.max(3, ...pages.map((p) => p.maxSamples), 0);
   return {
     ...shared,
     totalQuantity: String(reportQty),
-    sheet: '1 of 1',
+    sheet: pages.length > 1 ? `1 of ${pages.length}` : '1 of 1',
+    pages,
     rows,
     maxSamples,
     totalCols: computeTableColumnLayout(false, maxSamples).totalCols,
@@ -119,21 +163,22 @@ export function buildReportPayload({
 export function computeTableColumnLayout(isConsolidated, maxSamples) {
   const slCols = 1;
   const specCols = 2;
-  const qtyCols = isConsolidated ? 1 : 0;
   const zoneCols = 1;
   const measureCols = maxSamples;
-  const instCols = 2;
-  const totalCols = slCols + specCols + qtyCols + zoneCols + measureCols + instCols + 4;
-  const remCols = totalCols - slCols - specCols - qtyCols - zoneCols - measureCols - instCols;
+  const compact = isConsolidated && maxSamples >= 4;
+  const instCols = compact ? 1 : 2;
+  const remCols = compact ? 2 : 4;
+  const totalCols = slCols + specCols + zoneCols + measureCols + instCols + remCols;
   return {
     totalCols,
     slCols,
     specCols,
-    qtyCols,
     zoneCols,
     measureCols,
     instCols,
     remCols,
+    quantityCount: isConsolidated ? maxSamples : 0,
+    compact,
   };
 }
 
@@ -146,22 +191,78 @@ function normalizeColWidths(widths) {
   return rounded;
 }
 
+/** Meta header row spans (3 fields) — must sum to totalCols. */
+export function getMetaColSpans(totalCols) {
+  if (totalCols === 13) return [4, 5, 4];
+  const a = Math.max(1, Math.round((totalCols * 4) / 13));
+  const b = Math.max(1, Math.round((totalCols * 5) / 13));
+  const c = Math.max(1, totalCols - a - b);
+  return [a, b, c];
+}
+
+function metaRowsHtml(data, totalCols) {
+  const [spanA, spanB, spanC] = getMetaColSpans(totalCols);
+  return `<tr class="ir-meta-row">
+        ${metaFieldHtml('Report No :', data.reportNo, spanA)}
+        ${metaFieldHtml('Component Title:', data.componentTitle, spanB)}
+        ${metaFieldHtml('Date:', data.date, spanC)}
+      </tr>
+      <tr class="ir-meta-row">
+        ${metaFieldHtml('Project No.:', data.projectNo, spanA)}
+        ${metaFieldHtml('Drg No:', data.drgNo, spanB)}
+        ${metaFieldHtml('Sheet', data.sheet, spanC)}
+      </tr>
+      <tr class="ir-meta-row">
+        ${metaFieldHtml('Project Name:', data.projectName, spanA)}
+        ${metaFieldHtml('Quantity:', data.totalQuantity, spanB)}
+        ${metaFieldHtml('Assembly', data.assembly, spanC)}
+      </tr>`;
+}
+
+function getConsolidatedColumnWidths(quantityCount, colLayout) {
+  const { instCols, remCols } = colLayout;
+  const sl = 5;
+  const spec = 28;
+  const zone = 5;
+  const inst = instCols === 1 ? 10 : 14;
+  const rem = remCols === 2 ? 10 : 18;
+  const qtyBudget = 100 - sl - spec - zone - inst - rem;
+  const qtyEach = Math.max(5.5, qtyBudget / Math.max(1, quantityCount));
+  const widths = [sl, spec / 2, spec / 2, zone];
+  for (let i = 0; i < quantityCount; i += 1) widths.push(qtyEach);
+  if (instCols === 2) {
+    widths.push(inst / 2, inst / 2);
+  } else {
+    widths.push(inst);
+  }
+  if (remCols === 4) {
+    widths.push(rem / 4, rem / 4, rem / 4, rem / 4);
+  } else {
+    widths.push(rem / 2, rem / 2);
+  }
+  return normalizeColWidths(widths);
+}
+
 /** Column width % — tuned so labels/values do not overlap (sums to 100). */
-export function getReportColumnWidths(totalCols, isConsolidated, maxSamples) {
+export function getReportColumnWidths(totalCols, isConsolidated, maxSamples, colLayout) {
   if (!isConsolidated && maxSamples === 3 && totalCols === 13) {
     return [8, 8, 15, 7, 8, 7, 6, 6, 7, 7, 7, 8, 6];
+  }
+  if (isConsolidated) {
+    return getConsolidatedColumnWidths(maxSamples, colLayout || computeTableColumnLayout(true, maxSamples));
   }
   const base = 100 / totalCols;
   return Array.from({ length: totalCols }, () => Math.round(base * 100) / 100);
 }
 
 export function computeReportLayoutMm(data) {
-  const totalCols = data?.totalCols || 13;
-  const maxSamples = data?.maxSamples || 3;
   const isConsolidated = Boolean(data?.isConsolidated);
+  const maxSamples = data?.maxSamples || 3;
+  const colLayout = computeTableColumnLayout(isConsolidated, maxSamples);
+  const totalCols = data?.totalCols || colLayout.totalCols;
   return {
     totalCols,
-    colWidths: getReportColumnWidths(totalCols, isConsolidated, maxSamples),
+    colWidths: getReportColumnWidths(totalCols, isConsolidated, maxSamples, colLayout),
   };
 }
 
@@ -176,6 +277,23 @@ function dataRowHtml(row, layout) {
     <td colspan="${specCols}" class="ir-text-left"><p>${esc(row.specified)}</p></td>
     <td class="ir-col-zone"><p>${esc(row.zone)}</p></td>
     ${cells}
+    <td colspan="${instCols}"><p>${esc(row.instrument || 'default')}</p></td>
+    <td colspan="${remCols}" class="ir-text-left"><p>${esc(row.remarks || '')}</p></td>
+  </tr>`;
+}
+
+function consolidatedDataRowHtml(row, layout) {
+  const { quantityCount, specCols, instCols, remCols } = layout;
+  const averages = row.qtyAverages || [];
+  const qtyCells = Array.from({ length: quantityCount }, (_, qi) => {
+    const v = averages[qi];
+    return `<td class="ir-col-qty"><p>${esc(v !== '' && v != null ? v : '')}</p></td>`;
+  }).join('');
+  return `<tr class="ir-data-row">
+    <td><p>${esc(row.sno)}</p></td>
+    <td colspan="${specCols}" class="ir-text-left"><p>${esc(row.specified)}</p></td>
+    <td class="ir-col-zone"><p>${esc(row.zone)}</p></td>
+    ${qtyCells}
     <td colspan="${instCols}"><p>${esc(row.instrument || 'default')}</p></td>
     <td colspan="${remCols}" class="ir-text-left"><p>${esc(row.remarks || '')}</p></td>
   </tr>`;
@@ -294,14 +412,160 @@ function footerRowValues(footerRows, index) {
   return [row.chemical || '', row.ultrasonic || '', row.hardness || ''];
 }
 
-/** One quantity sheet — standard layout with measured value columns. */
+/** A4 content budget (mm) — conservative so rows + footer fit without clipping. */
+export const REPORT_PAGE_LAYOUT_MM = {
+  pageContentHeight: 268,
+  banner: 22,
+  meta: 30,
+  headers: 16,
+  dataRow: 8.2,
+  footer: 58,
+};
+
+const MIN_ORPHAN_ROWS = 8;
+
+export function computeMaxDataRowsPerPage(includeFooter, { singleHeaderRow = false } = {}) {
+  const { pageContentHeight, banner, meta, headers, dataRow, footer } = REPORT_PAGE_LAYOUT_MM;
+  const headerBudget = singleHeaderRow ? 8 : headers;
+  const fixed = banner + meta + headerBudget + (includeFooter ? footer : 0);
+  const raw = (pageContentHeight - fixed) / dataRow;
+  const safety = includeFooter ? 0.88 : 0.92;
+  return Math.max(1, Math.floor(raw * safety));
+}
+
+/** Split characteristic rows across A4 pages; footer only on the final chunk. */
+export function paginateReportRows(rows, { singleHeaderRow = false } = {}) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) return [{ rows: [], showFooter: true }];
+
+  const maxNoFooter = computeMaxDataRowsPerPage(false, { singleHeaderRow });
+  const maxWithFooter = computeMaxDataRowsPerPage(true, { singleHeaderRow });
+  const pages = [];
+  let i = 0;
+
+  while (i < list.length) {
+    const remaining = list.length - i;
+    if (remaining <= maxWithFooter) {
+      pages.push({ rows: list.slice(i), showFooter: true });
+      break;
+    }
+    if (remaining <= maxNoFooter) {
+      const lead = remaining - maxWithFooter;
+      if (lead > 0 && lead < MIN_ORPHAN_ROWS) {
+        const first = Math.floor(remaining / 2);
+        if (first > 0) {
+          pages.push({ rows: list.slice(i, i + first), showFooter: false });
+          i += first;
+        }
+        pages.push({ rows: list.slice(i), showFooter: true });
+        break;
+      }
+      if (lead > 0) {
+        pages.push({ rows: list.slice(i, i + lead), showFooter: false });
+        i += lead;
+      }
+      pages.push({ rows: list.slice(i), showFooter: true });
+      break;
+    }
+    pages.push({ rows: list.slice(i, i + maxNoFooter), showFooter: false });
+    i += maxNoFooter;
+  }
+
+  return pages;
+}
+
+export function buildPageList(rowGroups, shared, {
+  qty,
+  footerRows,
+  inspectedBy,
+  checkedBy,
+  isConsolidated = false,
+  quantityCount = 0,
+} = {}) {
+  const pages = [];
+  rowGroups.forEach((group) => {
+    const chunks = paginateReportRows(group.rows || [], { singleHeaderRow: isConsolidated });
+    chunks.forEach((chunk, chunkIndex) => {
+      const maxSamples = isConsolidated
+        ? quantityCount
+        : Math.max(3, ...chunk.rows.map((r) => (r.measurements || []).length), 0);
+      const colLayout = computeTableColumnLayout(isConsolidated, maxSamples);
+      pages.push({
+        qty: qty ?? group.qty,
+        rows: chunk.rows,
+        showFooter: chunk.showFooter,
+        pageInGroup: `${chunkIndex + 1} of ${chunks.length}`,
+        qtyGroupStart: chunkIndex === 0,
+        totalQuantity: isConsolidated
+          ? (shared.totalQuantity ?? '')
+          : (qty != null ? String(qty) : String(group.qty ?? shared.totalQuantity ?? '')),
+        maxSamples,
+        quantityCount: isConsolidated ? quantityCount : undefined,
+        isConsolidated,
+        totalCols: colLayout.totalCols,
+        footerRows: chunk.showFooter ? (footerRows ?? group.footerRows) : undefined,
+        inspectedBy: chunk.showFooter ? inspectedBy : undefined,
+        checkedBy: chunk.showFooter ? checkedBy : undefined,
+      });
+    });
+  });
+  const total = pages.length;
+  pages.forEach((page, index) => {
+    page.sheet = `${index + 1} of ${total}`;
+    page.pageIndex = index;
+  });
+  return pages;
+}
+
+/** One editor page — never pass the full pages[] array into the HTML builder. */
+export function buildEditorPagePayload(basePayload, page) {
+  if (!basePayload || !page) return basePayload;
+  const {
+    pages: _pages,
+    sheets: _sheets,
+    rows: _rows,
+    ...shared
+  } = basePayload;
+  return {
+    ...shared,
+    ...page,
+    rows: page.rows,
+    totalQuantity: page.totalQuantity || shared.totalQuantity,
+    isConsolidated: Boolean(basePayload.isConsolidated),
+    quantityCount: basePayload.quantityCount ?? page.quantityCount,
+    footerRows: page.footerRows ?? basePayload.footerRows,
+    inspectedBy: page.inspectedBy ?? basePayload.inspectedBy,
+    checkedBy: page.checkedBy ?? basePayload.checkedBy,
+  };
+}
+
+function groupPagesByQty(pages) {
+  const groups = [];
+  pages.forEach((page) => {
+    const qtyKey = String(page.qty ?? page.totalQuantity ?? '');
+    const last = groups[groups.length - 1];
+    if (last && last.qtyKey === qtyKey) {
+      last.pages.push(page);
+    } else {
+      groups.push({ qtyKey, qty: page.qty ?? page.totalQuantity, pages: [page] });
+    }
+  });
+  return groups;
+}
+
+export { groupPagesByQty };
+
+/** One A4 page — standard or consolidated layout; footer omitted on continuation pages. */
 export function buildSingleSheetTableHtml(data) {
   if (!data) return '';
+  if (data.isConsolidated) {
+    return buildConsolidatedSheetTableHtml(data);
+  }
 
   const maxSamples = data.maxSamples || 3;
   const colLayout = computeTableColumnLayout(false, maxSamples);
   const { totalCols, specCols, instCols, remCols } = colLayout;
-  const colWidths = getReportColumnWidths(totalCols, false, maxSamples);
+  const colWidths = getReportColumnWidths(totalCols, false, maxSamples, colLayout);
   const layout = getFooterLayout(totalCols, colWidths);
 
   const bodyRows = (data.rows || [])
@@ -311,25 +575,25 @@ export function buildSingleSheetTableHtml(data) {
   const sampleHead = Array.from({ length: maxSamples }, (_, i) => `<th><p>${i + 1}</p></th>`).join('');
   const colgroup = `<colgroup>${colWidths.map((w) => `<col style="width:${w}%">`).join('')}</colgroup>`;
   const { chemCols, ultCols, hardCols } = layout;
+  const showFooter = data.showFooter !== false;
+
+  const footerHtml = showFooter
+    ? `<tr class="ir-page-footer ir-footer-head">
+        <td colspan="${chemCols}"><p><strong>Chemical Test</strong></p></td>
+        <td colspan="${ultCols}"><p><strong>Ultrasonic Test</strong></p></td>
+        <td colspan="${hardCols}"><p><strong>Hardness Test</strong></p></td>
+      </tr>
+      ${footerDetailRow('Date', 'Date', 'Date', layout, footerRowValues(data.footerRows, 0))}
+      ${footerDetailRow('Report No', 'Report No', 'W.O.NO', layout, footerRowValues(data.footerRows, 1))}
+      ${footerDetailRow('Authoriser', 'Authoriser', 'Hardness Value', layout, footerRowValues(data.footerRows, 2))}
+      ${footerDetailRow('Status', 'Status', 'Status', layout, footerRowValues(data.footerRows, 3))}
+      ${footerSignRow(layout, data.inspectedBy || '', data.checkedBy || '')}`
+    : '';
 
   return `<table class="ir-sheet-table">
     ${colgroup}
     <tbody class="ir-sheet-body">
-      <tr class="ir-meta-row">
-        ${metaFieldHtml('Report No :', data.reportNo, 4)}
-        ${metaFieldHtml('Component Title:', data.componentTitle, 5)}
-        ${metaFieldHtml('Date:', data.date, 4)}
-      </tr>
-      <tr class="ir-meta-row">
-        ${metaFieldHtml('Project No.:', data.projectNo, 4)}
-        ${metaFieldHtml('Drg No:', data.drgNo, 5)}
-        ${metaFieldHtml('Sheet', data.sheet, 4)}
-      </tr>
-      <tr class="ir-meta-row">
-        ${metaFieldHtml('Project Name:', data.projectName, 4)}
-        ${metaFieldHtml('Quantity:', data.totalQuantity, 5)}
-        ${metaFieldHtml('Assembly', data.assembly, 4)}
-      </tr>
+      ${metaRowsHtml(data, totalCols)}
       <tr class="ir-head ir-head-main">
         <th><p>Sl No</p></th>
         <th colspan="${specCols}"><p>Specified Values</p></th>
@@ -347,7 +611,34 @@ export function buildSingleSheetTableHtml(data) {
         <th colspan="${remCols}"><p></p></th>
       </tr>
       ${bodyRows}
-      <tr class="ir-page-footer ir-footer-head">
+      ${footerHtml}
+    </tbody>
+  </table>`;
+}
+
+function buildConsolidatedSheetTableHtml(data) {
+  const quantityCount = data.quantityCount || data.maxSamples || 1;
+  const colLayout = computeTableColumnLayout(true, quantityCount);
+  const { totalCols, specCols, instCols, remCols } = colLayout;
+  const colWidths = getReportColumnWidths(totalCols, true, quantityCount, colLayout);
+  const layout = getFooterLayout(totalCols, colWidths);
+  const { chemCols, ultCols, hardCols } = layout;
+  const showFooter = data.showFooter !== false;
+  const qtyLabel = quantityCount >= 4 ? 'Qty' : 'Quantity';
+
+  const bodyRows = (data.rows || [])
+    .map((row) => consolidatedDataRowHtml(row, { quantityCount, ...colLayout }))
+    .join('');
+
+  const qtyHead = Array.from(
+    { length: quantityCount },
+    (_, i) => `<th class="ir-head-qty"><p>${qtyLabel} ${i + 1}</p></th>`,
+  ).join('');
+
+  const colgroup = `<colgroup>${colWidths.map((w) => `<col style="width:${w}%">`).join('')}</colgroup>`;
+
+  const footerHtml = showFooter
+    ? `<tr class="ir-page-footer ir-footer-head">
         <td colspan="${chemCols}"><p><strong>Chemical Test</strong></p></td>
         <td colspan="${ultCols}"><p><strong>Ultrasonic Test</strong></p></td>
         <td colspan="${hardCols}"><p><strong>Hardness Test</strong></p></td>
@@ -356,27 +647,29 @@ export function buildSingleSheetTableHtml(data) {
       ${footerDetailRow('Report No', 'Report No', 'W.O.NO', layout, footerRowValues(data.footerRows, 1))}
       ${footerDetailRow('Authoriser', 'Authoriser', 'Hardness Value', layout, footerRowValues(data.footerRows, 2))}
       ${footerDetailRow('Status', 'Status', 'Status', layout, footerRowValues(data.footerRows, 3))}
-      ${footerSignRow(layout, data.inspectedBy || '', data.checkedBy || '')}
+      ${footerSignRow(layout, data.inspectedBy || '', data.checkedBy || '')}`
+    : '';
+
+  return `<table class="ir-sheet-table ir-sheet-table--consolidated" data-qty-count="${quantityCount}">
+    ${colgroup}
+    <tbody class="ir-sheet-body">
+      ${metaRowsHtml(data, totalCols)}
+      <tr class="ir-head ir-head-main ir-head-group">
+        <th><p>Sl No</p></th>
+        <th colspan="${specCols}"><p>Specified Values</p></th>
+        <th class="ir-head-zone"><p>Zone</p></th>
+        ${qtyHead}
+        <th colspan="${instCols}"><p>Instrument</p></th>
+        <th colspan="${remCols}"><p>Remarks</p></th>
+      </tr>
+      ${bodyRows}
+      ${footerHtml}
     </tbody>
   </table>`;
 }
 
-/** Tiptap HTML — compact Word-style report (data rows only, no padding). */
+/** Tiptap HTML — one physical page only (used inside each ReportSheetEditor). */
 export function buildReportDocumentHtml(data) {
   if (!data) return '<p></p>';
-
-  if (data.sheets?.length) {
-    return data.sheets
-      .map(
-        (sheet, index) =>
-          `<div class="ir-consolidated-sheet" data-sheet-index="${index}" data-qty="${esc(sheet.qty)}">${buildSingleSheetTableHtml({
-            ...data,
-            ...sheet,
-            rows: sheet.rows,
-          })}</div>`,
-      )
-      .join('');
-  }
-
   return buildSingleSheetTableHtml(data);
 }

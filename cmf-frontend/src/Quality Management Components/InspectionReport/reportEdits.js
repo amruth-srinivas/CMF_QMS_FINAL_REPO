@@ -1,5 +1,7 @@
 /** Parse editable report HTML back into payload fields (remarks, footer values, signatories). */
 
+import { buildPageList } from './reportDocumentBuilder';
+
 function cellText(el) {
   return (el?.textContent || '').replace(/\u00a0/g, ' ').trim();
 }
@@ -58,15 +60,101 @@ function parseSheetTable(table) {
 }
 
 function findSheetTables(doc) {
+  const pageSections = Array.from(doc.querySelectorAll('.ir-report-page'));
+  if (pageSections.length) {
+    return pageSections.map((section) => ({
+      table: section.querySelector('table.ir-sheet-table') || section.querySelector('table'),
+      pageIndex: Number(section.getAttribute('data-page-index') || 0),
+    }));
+  }
   const sections = Array.from(doc.querySelectorAll('.ir-consolidated-sheet'));
   if (sections.length) {
     return sections.map((section) => ({
       table: section.querySelector('table.ir-sheet-table') || section.querySelector('table'),
-      sheetIndex: Number(section.getAttribute('data-sheet-index') || 0),
+      pageIndex: Number(section.getAttribute('data-sheet-index') || 0),
     }));
   }
   const table = doc.querySelector('table.ir-sheet-table') || doc.querySelector('table');
-  return table ? [{ table, sheetIndex: 0 }] : [];
+  return table ? [{ table, pageIndex: 0 }] : [];
+}
+
+function mergeRemarksAcrossPages(payload, pageTables) {
+  const sorted = [...pageTables].sort((a, b) => a.pageIndex - b.pageIndex);
+  const rows = (payload.rows || []).map((row) => ({ ...row }));
+  let globalIdx = 0;
+  sorted.forEach(({ table }) => {
+    if (!table) return;
+    table.querySelectorAll('tr.ir-data-row').forEach((row) => {
+      const cells = row.querySelectorAll('td');
+      if (!cells.length) return;
+      const last = cells[cells.length - 1];
+      const text = cellText(last);
+      if (rows[globalIdx]) {
+        rows[globalIdx] = { ...rows[globalIdx], remarks: text };
+      }
+      globalIdx += 1;
+    });
+  });
+  return rows;
+}
+
+function mergeFooterFromLastPage(pageTables) {
+  const sorted = [...pageTables].sort((a, b) => a.pageIndex - b.pageIndex);
+  for (let i = sorted.length - 1; i >= 0; i -= 1) {
+    const { table } = sorted[i];
+    if (!table?.querySelector('.ir-footer-head')) continue;
+    return {
+      footerRows: parseFooterRows(table),
+      ...parseSignatories(table),
+    };
+  }
+  return { footerRows: [], inspectedBy: '', checkedBy: '' };
+}
+
+function repaginatePayload(payload, rows, footerMeta = {}) {
+  const shared = {
+    reportNo: payload.reportNo,
+    componentTitle: payload.componentTitle,
+    date: payload.date,
+    projectNo: payload.projectNo,
+    drgNo: payload.drgNo,
+    projectName: payload.projectName,
+    assembly: payload.assembly,
+    totalQuantity: payload.totalQuantity,
+  };
+
+  if (payload.isConsolidated) {
+    const pages = buildPageList([{ rows }], shared, {
+      isConsolidated: true,
+      quantityCount: payload.quantityCount ?? payload.sheets?.length ?? payload.maxSamples ?? 1,
+      footerRows: footerMeta.footerRows?.length ? footerMeta.footerRows : payload.footerRows,
+      inspectedBy: footerMeta.inspectedBy ?? payload.inspectedBy ?? '',
+      checkedBy: footerMeta.checkedBy ?? payload.checkedBy ?? '',
+    });
+    return {
+      ...payload,
+      rows,
+      pages,
+      footerRows: footerMeta.footerRows?.length ? footerMeta.footerRows : payload.footerRows,
+      inspectedBy: footerMeta.inspectedBy ?? payload.inspectedBy ?? '',
+      checkedBy: footerMeta.checkedBy ?? payload.checkedBy ?? '',
+    };
+  }
+
+  const pages = buildPageList([{ rows }], shared, {
+    qty: payload.totalQuantity,
+    footerRows: footerMeta.footerRows?.length ? footerMeta.footerRows : payload.footerRows,
+    inspectedBy: footerMeta.inspectedBy ?? payload.inspectedBy ?? '',
+    checkedBy: footerMeta.checkedBy ?? payload.checkedBy ?? '',
+  });
+  return {
+    ...payload,
+    rows,
+    pages,
+    footerRows: footerMeta.footerRows?.length ? footerMeta.footerRows : payload.footerRows,
+    inspectedBy: footerMeta.inspectedBy ?? payload.inspectedBy ?? '',
+    checkedBy: footerMeta.checkedBy ?? payload.checkedBy ?? '',
+  };
 }
 
 function applyRemarkEdits(rows, remarkEdits) {
@@ -90,9 +178,18 @@ export function mergeReportEditsFromHtml(html, payload) {
     return { ...payload, rows: [...(payload.rows || [])] };
   }
 
+  if (payload.pages?.length) {
+    const rows = mergeRemarksAcrossPages(payload, sheetTables);
+    const footerMeta = mergeFooterFromLastPage(sheetTables);
+    return {
+      ...repaginatePayload(payload, rows, footerMeta),
+      savedAt: new Date().toISOString(),
+    };
+  }
+
   if (payload.sheets?.length) {
     const sheets = payload.sheets.map((sheet, index) => {
-      const match = sheetTables.find((s) => s.sheetIndex === index) || sheetTables[index];
+      const match = sheetTables.find((s) => s.pageIndex === index) || sheetTables[index];
       if (!match?.table) return { ...sheet };
       const parsed = parseSheetTable(match.table);
       return {
@@ -131,39 +228,54 @@ export function mergeReportEditsFromHtml(html, payload) {
 export function applySavedEditsToPayload(payload, saved) {
   if (!payload || !saved?.saved) return payload;
 
+  const rows = (payload.rows || []).map((row, idx) => {
+    const savedRow = saved.rows?.[idx];
+    if (!savedRow || savedRow.remarks == null) return row;
+    return { ...row, remarks: savedRow.remarks };
+  });
+
+  const footerMeta = {
+    footerRows: saved.footerRows?.length ? saved.footerRows : payload.footerRows,
+    inspectedBy: saved.inspectedBy || payload.inspectedBy || '',
+    checkedBy: saved.checkedBy || payload.checkedBy || '',
+  };
+
+  if (payload.pages?.length) {
+    return repaginatePayload(
+      { ...payload, savedAt: saved.savedAt || payload.savedAt },
+      rows,
+      footerMeta,
+    );
+  }
+
   if (payload.sheets?.length && saved.sheets?.length) {
     const sheets = payload.sheets.map((sheet, sheetIndex) => {
       const savedSheet = saved.sheets[sheetIndex];
       if (!savedSheet) return sheet;
-      const rows = (sheet.rows || []).map((row, idx) => {
+      const sheetRows = (sheet.rows || []).map((row, idx) => {
         const savedRow = savedSheet.rows?.[idx];
         if (!savedRow || savedRow.remarks == null) return row;
         return { ...row, remarks: savedRow.remarks };
       });
       return {
         ...sheet,
-        rows,
+        rows: sheetRows,
         footerRows: savedSheet.footerRows?.length ? savedSheet.footerRows : sheet.footerRows,
         inspectedBy: savedSheet.inspectedBy ?? sheet.inspectedBy ?? '',
         checkedBy: savedSheet.checkedBy ?? sheet.checkedBy ?? '',
       };
     });
-    return {
-      ...payload,
-      sheets,
-      rows: sheets.flatMap((s) => s.rows),
-      footerRows: saved.footerRows?.length ? saved.footerRows : payload.footerRows,
-      inspectedBy: saved.inspectedBy || sheets[0]?.inspectedBy || '',
-      checkedBy: saved.checkedBy || sheets[0]?.checkedBy || '',
-      savedAt: saved.savedAt || payload.savedAt,
-    };
+    return repaginatePayload(
+      {
+        ...payload,
+        sheets,
+        rows: sheets.flatMap((s) => s.rows),
+        savedAt: saved.savedAt || payload.savedAt,
+      },
+      sheets.flatMap((s) => s.rows),
+      footerMeta,
+    );
   }
-
-  const rows = (payload.rows || []).map((row, idx) => {
-    const savedRow = saved.rows?.[idx];
-    if (!savedRow || savedRow.remarks == null) return row;
-    return { ...row, remarks: savedRow.remarks };
-  });
 
   let sheets = payload.sheets;
   if (sheets?.length && saved.rows?.length) {
@@ -183,9 +295,9 @@ export function applySavedEditsToPayload(payload, saved) {
     ...payload,
     rows,
     sheets,
-    footerRows: saved.footerRows?.length ? saved.footerRows : payload.footerRows,
-    inspectedBy: saved.inspectedBy || '',
-    checkedBy: saved.checkedBy || '',
+    footerRows: footerMeta.footerRows,
+    inspectedBy: footerMeta.inspectedBy,
+    checkedBy: footerMeta.checkedBy,
     savedAt: saved.savedAt || payload.savedAt,
   };
 }

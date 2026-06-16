@@ -15,7 +15,8 @@ from typing import List, Optional
 from DB.database import get_db
 from DB.models.quality import MasterBoc, StageInspection, Note, InspectionPlanStatus, FTP
 from DB.models.notifications import InspectionPlanNotification
-from DB.models.oms import Part, Order
+from DB.models.oms import Part, Order, Operation
+from DB.models.scheduling import ProductionLog
 from DB.models.access_control import AccessUser
 from DB.schemas.quality_api import (
     MasterBocBulkCreate,
@@ -32,6 +33,7 @@ from DB.schemas.quality_api import (
     NoteResponse,
     InspectionPlanStatusUpsert,
     InspectionPlanStatusResponse,
+    OperationProductionSummaryItem,
 )
 
 router = APIRouter(prefix="/quality", tags=["quality"])
@@ -99,6 +101,79 @@ def list_inspection_plan_status(
     if op_no is not None:
         q = q.filter(InspectionPlanStatus.op_no == op_no)
     return q.order_by(InspectionPlanStatus.op_no.asc()).all()
+
+
+def _parse_op_no(operation_number: Optional[str]) -> int:
+    try:
+        n = int(str(operation_number or "").strip())
+        return n if n >= 0 else 10
+    except (TypeError, ValueError):
+        return 10
+
+
+def _latest_production_log_by_operation(
+    db: Session, operation_ids: List[int]
+) -> dict[int, ProductionLog]:
+    if not operation_ids:
+        return {}
+    logs = (
+        db.query(ProductionLog)
+        .filter(ProductionLog.operation_id.in_(operation_ids))
+        .order_by(
+            ProductionLog.operation_id.asc(),
+            ProductionLog.created_at.desc(),
+            ProductionLog.id.desc(),
+        )
+        .all()
+    )
+    latest: dict[int, ProductionLog] = {}
+    for log in logs:
+        if log.operation_id not in latest:
+            latest[log.operation_id] = log
+    return latest
+
+
+@router.get("/operation-production-summary", response_model=List[OperationProductionSummaryItem])
+def operation_production_summary(
+    part_id: int = Query(..., description="oms.parts.id"),
+    db: Session = Depends(get_db),
+):
+    """Per-operation qty/yield from part quantity and the latest production log row."""
+    part = db.query(Part).filter(Part.id == part_id).first()
+    if not part:
+        raise HTTPException(status_code=404, detail="Part not found")
+
+    required_qty = max(1, int(part.qty or 1))
+    operations = (
+        db.query(Operation)
+        .filter(Operation.part_id == part_id)
+        .order_by(Operation.operation_number.asc())
+        .all()
+    )
+    op_ids = [op.id for op in operations]
+    latest_by_op = _latest_production_log_by_operation(db, op_ids)
+
+    results: List[OperationProductionSummaryItem] = []
+    for op in operations:
+        latest = latest_by_op.get(op.id)
+        completed = int(latest.produced_quantity or 0) if latest else 0
+        accepted = int(latest.approved_quantity or 0) if latest else 0
+        rejected = 0
+        if latest:
+            rejected = int(latest.rejected_quantity or 0) + int(latest.rework_quantity or 0)
+        yield_pct = round((accepted / completed) * 100, 1) if completed > 0 else 0.0
+        results.append(
+            OperationProductionSummaryItem(
+                operation_id=op.id,
+                op_no=_parse_op_no(op.operation_number),
+                required_quantity=required_qty,
+                completed_quantity=completed,
+                accepted_quantity=accepted,
+                rejected_quantity=rejected,
+                yield_percentage=yield_pct,
+            )
+        )
+    return results
 
 
 @router.get("/ftp-status", response_model=Optional[FTPStatusResponse])

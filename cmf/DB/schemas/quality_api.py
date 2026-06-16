@@ -135,6 +135,16 @@ class InspectionPlanStatusResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class OperationProductionSummaryItem(BaseModel):
+    operation_id: int
+    op_no: int
+    required_quantity: int
+    completed_quantity: int
+    accepted_quantity: int
+    rejected_quantity: int
+    yield_percentage: float
+
+
 class NoteBase(BaseModel):
     part_id: int
     document_id: Optional[int] = None
