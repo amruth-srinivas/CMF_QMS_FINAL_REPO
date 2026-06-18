@@ -454,6 +454,9 @@ export default function InspectionReportModal({
 
   const partLabel = target?.partNumber || '—';
   const opLabel = target?.opNo ?? '—';
+  const isFinalInspection = Number(target?.opNo) === 0;
+  const reportTitleLabel = isFinalInspection ? 'Final Inspection Report' : 'Inspection Report';
+  const operationLabel = isFinalInspection ? 'Final Inspection' : `Op ${opLabel}`;
   const qtyLabel = reportQty === 'consolidated' ? 'Consolidated' : `Qty ${reportQty}`;
 
   return (
@@ -495,7 +498,7 @@ export default function InspectionReportModal({
                 <FileTextOutlined className="ir-sidebar-brand-icon" />
               </div>
               <div className="ir-sidebar-brand-text">
-                <Title level={5} className="ir-sidebar-title">Inspection Report</Title>
+                <Title level={5} className="ir-sidebar-title">{reportTitleLabel}</Title>
                 <Text type="secondary" className="ir-sidebar-subtitle">A4 editable preview</Text>
               </div>
             </div>
@@ -510,7 +513,7 @@ export default function InspectionReportModal({
               </div>
               <div className="ir-meta-item">
                 <Text className="ir-sidebar-label">Operation</Text>
-                <Text strong className="ir-sidebar-value">Op {opLabel}</Text>
+                <Text strong className="ir-sidebar-value">{operationLabel}</Text>
               </div>
             </div>
             <div className="ir-meta-qty">
@@ -646,7 +649,7 @@ export default function InspectionReportModal({
                 {handMode ? 'Pan' : 'Edit'}
               </span>
               <Text className="ir-workspace-breadcrumb">
-                {partLabel} · Op {opLabel} · {qtyLabel}
+                {partLabel} · {operationLabel} · {qtyLabel}
               </Text>
               {isDirty ? (
                 <Tag color="orange" className="ir-workspace-tag">Unsaved edits</Tag>

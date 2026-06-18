@@ -127,12 +127,6 @@ function renderInspectionSummaryBar(summary) {
       <Tag style={{ margin: 0, borderRadius: 8, fontWeight: 700, background: '#fef2f2', border: '1px solid #fca5a5', color: '#b91c1c' }}>
         NO GO: {summary.nogo}
       </Tag>
-      <Tag style={{ margin: 0, borderRadius: 8, fontWeight: 600, background: '#fff', border: '1px solid #cbd5e1', color: '#64748b' }}>
-        Pending: {summary.pending}
-      </Tag>
-      <Tag style={{ margin: 0, borderRadius: 8, fontWeight: 700, background: '#eff6ff', border: '1px solid #93c5fd', color: '#1d4ed8' }}>
-        Pass Rate: {summary.passRate}%
-      </Tag>
     </div>
   );
 }

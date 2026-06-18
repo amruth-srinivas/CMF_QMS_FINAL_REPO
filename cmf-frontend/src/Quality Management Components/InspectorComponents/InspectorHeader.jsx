@@ -10,6 +10,8 @@ const displayOrDash = (value) => {
   return s || '—';
 };
 
+const MONO_FONT = '"JetBrains Mono", "Consolas", "Courier New", monospace';
+
 const C = {
   slate50: '#f8fafc',
   slate100: '#f1f5f9',
@@ -87,6 +89,7 @@ const InspectorHeader = ({
   partName = '',
   operationName = '',
   fileName = 'Drawing.pdf',
+  centerTitle = '',
   mode = 'PLAN',
   onModeChange,
   planStatus = null,
@@ -101,6 +104,7 @@ const InspectorHeader = ({
 }) => {
   const navigate = useNavigate();
   const canConfirm = typeof onConfirmPlan === 'function' && !confirmPlanDisabled;
+  const showCenterTitle = Boolean((centerTitle || '').trim());
 
   return (
     <div
@@ -109,14 +113,14 @@ const InspectorHeader = ({
         padding: '0 20px',
         background: '#fff',
         borderBottom: `1px solid ${C.slate200}`,
-        display: 'flex',
+        display: 'grid',
+        gridTemplateColumns: '1fr auto 1fr',
         alignItems: 'center',
-        justifyContent: 'space-between',
         boxShadow: '0 1px 3px rgba(15, 23, 42, 0.04)',
         zIndex: 10,
       }}
     >
-      <Space size="large" align="center">
+      <Space size="large" align="center" style={{ minWidth: 0, justifySelf: 'start' }}>
         <Button
           type="text"
           onClick={() => navigate(-1)}
@@ -177,7 +181,26 @@ const InspectorHeader = ({
         </Text>
       </Space>
 
-      <Space size={12} align="center">
+      {showCenterTitle ? (
+        <Text
+          strong
+          style={{
+            justifySelf: 'center',
+            fontSize: 16,
+            letterSpacing: '0.06em',
+            textTransform: 'uppercase',
+            color: C.slate900,
+            whiteSpace: 'nowrap',
+            fontFamily: MONO_FONT,
+          }}
+        >
+          {centerTitle}
+        </Text>
+      ) : (
+        <span />
+      )}
+
+      <Space size={12} align="center" style={{ justifySelf: 'end' }}>
         {measureOnly ? (
           <Tag
             color="processing"

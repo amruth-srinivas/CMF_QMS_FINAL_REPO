@@ -74,18 +74,19 @@ function focusMeasureInput(stageId, index) {
   }, 10);
 }
 
-function readMeasureInputs(stageId) {
-  if (!stageId) return [];
-  const inputs = [];
-  for (let i = 0; i < 50; i++) {
+function readMeasureInputs(stageId, record, columnCount = 3) {
+  const base = [...(record?.measurements || [])];
+  while (base.length < columnCount) base.push('');
+  if (!stageId) return base.slice(0, columnCount);
+  for (let i = 0; i < columnCount; i += 1) {
     const el = document.querySelector(`.measure-cell-stage-${stageId}-${i} input`);
-    if (el) {
-      inputs.push(el.value ?? '');
-    } else {
-      break;
-    }
+    if (el) base[i] = el.value ?? '';
   }
-  return inputs;
+  return base.slice(0, columnCount);
+}
+
+function beginCellEdit(e) {
+  e.stopPropagation();
 }
 
 const InspectorBOCTable = ({
@@ -210,7 +211,7 @@ const InspectorBOCTable = ({
     if (!wrap || !measureMode) return;
     const onDown = (e) => {
       if (e.button !== 0) return;
-      if (e.target.closest?.('input, textarea, button, a, .ant-select, [role="combobox"]')) return;
+      if (e.target.closest?.('input, textarea, button, a, .ant-select, [role="combobox"], .qms-measure-cell-display, .qms-editable-cell, .ant-input')) return;
       const scrollEl = getTableScrollEl();
       if (!scrollEl) return;
       dragStateRef.current = {
@@ -281,15 +282,19 @@ const InspectorBOCTable = ({
   const saveCurrentRow = async (record) => {
     const stageId = record.stageInspectionId;
     if (!stageId || !onMeasurePatch) return;
-    const mList = readMeasureInputs(stageId);
+    const mList = readMeasureInputs(stageId, record, measurementCount);
     const meanStr = computeMeanFromStrings(mList);
     const numVals = mList.map(v => parseMeasurementNum(v));
     const allFilled = numVals.length > 0 && numVals.every(v => v != null);
-    await onMeasurePatch(stageId, { measurements: mList, measured_mean: meanStr || '', is_done: allFilled });
+    await onMeasurePatch(stageId, {
+      measurements: mList,
+      measured_mean: meanStr || '',
+      is_done: allFilled,
+    });
   };
 
   const handleMeasureKeyDown = useCallback((e, record, rowIndex, index, maxIndex) => {
-    if (!record.stageInspectionId || record.measureLocked) return;
+    if (!record.stageInspectionId) return;
     if (e.key === 'ArrowRight') {
       e.preventDefault();
       void saveCurrentRow(record);
@@ -314,28 +319,40 @@ const InspectorBOCTable = ({
         if (next?.stageInspectionId) requestAnimationFrame(() => focusMeasureInput(next.stageInspectionId, 0));
       }
     }
-  }, [dataSource, onMeasurePatch]);
+  }, [dataSource, measurementCount]);
 
   const renderMInput = useCallback((index, width, maxIndex) => (v, record, rowIndexArg) => {
     const rowIndex = typeof rowIndexArg === 'number' ? rowIndexArg : dataSource.findIndex(r => r.id === record.id);
+    const display = v != null && String(v).trim() !== '' ? String(v) : '';
     if (!measureMode) {
-      return <div style={cellCenter}><Text style={{ fontSize: '11px' }}>{v != null && String(v).trim() !== '' ? String(v) : '—'}</Text></div>;
+      return <div style={cellCenter}><Text style={{ fontSize: '11px' }}>{display || '—'}</Text></div>;
     }
-    const locked = Boolean(record.measureLocked);
+    if (!record.stageInspectionId) {
+      return (
+        <div style={cellCenter}>
+          <Text style={{ fontSize: '11px', color: '#bfbfbf' }}>—</Text>
+        </div>
+      );
+    }
     return (
-      <div style={cellCenter} className={`measure-cell-stage-${record.stageInspectionId}-${index}`}>
+      <div
+        style={cellCenter}
+        className={`measure-cell-stage-${record.stageInspectionId}-${index} qms-measure-cell-display`}
+        onMouseDown={beginCellEdit}
+      >
         <Input
           key={`m-${record.id}-${record.stageInspectionId}-${index}`}
           size="small"
-          defaultValue={v ?? ''}
-          disabled={locked}
-          onBlur={() => { if (!locked && !skipBlurSaveRef.current) void saveCurrentRow(record); }}
+          defaultValue={display}
+          onBlur={() => { if (!skipBlurSaveRef.current) void saveCurrentRow(record); }}
+          onClick={beginCellEdit}
+          onFocus={beginCellEdit}
           onKeyDown={(e) => handleMeasureKeyDown(e, record, rowIndex, index, maxIndex)}
           style={{ width, fontSize: 11, paddingInline: 6 }}
         />
       </div>
     );
-  }, [measureMode, dataSource, onMeasurePatch, handleMeasureKeyDown]);
+  }, [measureMode, dataSource, handleMeasureKeyDown, measurementCount]);
 
   const renderActualDisplay = useCallback((v, record) => {
     const display = v != null && String(v).trim() !== '' ? String(v) : '—';
@@ -386,7 +403,16 @@ const InspectorBOCTable = ({
           return <Input size="small" autoFocus defaultValue={displayVal} placeholder="default" style={{ fontSize: 11, width: '100%' }} onBlur={(e) => { const val = e.target.value.trim() || 'default'; if (record.stageInspectionId) onMeasurePatch?.(record.stageInspectionId, { measured_instrument: val }); setEditingInstrumentRowId(null); }} onKeyDown={(e) => { if (e.key === 'Enter') e.target.blur(); if (e.key === 'Escape') setEditingInstrumentRowId(null); }} />;
         }
         if (measureMode) {
-          return <div style={{ cursor: 'pointer', width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, minHeight: 22 }} onClick={(e) => { e.stopPropagation(); setEditingInstrumentRowId(record.id); }}><Text style={{ fontSize: '11px', color: displayVal ? '#262626' : '#bfbfbf' }}>{displayVal || 'default'}</Text><EditOutlined style={{ fontSize: 10, color: '#1890ff' }} /></div>;
+          return (
+            <div
+              className="qms-editable-cell"
+              style={{ cursor: 'pointer', width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, minHeight: 22 }}
+              onClick={(e) => { e.stopPropagation(); setEditingInstrumentRowId(record.id); }}
+            >
+              <Text style={{ fontSize: '11px', color: displayVal ? '#262626' : '#bfbfbf' }}>{displayVal || 'default'}</Text>
+              <EditOutlined style={{ fontSize: 10, color: '#1890ff' }} />
+            </div>
+          );
         }
         return <Text style={{ fontSize: '11px', color: displayVal ? '#262626' : '#bfbfbf' }}>{displayVal || 'default'}</Text>;
       }
@@ -403,6 +429,7 @@ const InspectorBOCTable = ({
         const canPick = Boolean(record.stageInspectionId) && !record.measureLocked && sub && sub !== 'default';
         return (
           <div
+            className="qms-editable-cell"
             style={{
               cursor: canPick ? 'pointer' : 'not-allowed',
               width: '100%',
@@ -413,10 +440,17 @@ const InspectorBOCTable = ({
               minHeight: 22,
               opacity: canPick ? 1 : 0.65,
             }}
+            title={canPick ? 'Click to select instrument' : undefined}
             onClick={(e) => {
               e.stopPropagation();
               if (!canPick) {
-                if (!sub || sub === 'default') message.warning('Supervisor has not assigned an instrument for this characteristic.');
+                if (!record.stageInspectionId) {
+                  message.warning('Measurement row is not ready yet. Wait for data to load or switch quantity.');
+                } else if (record.measureLocked) {
+                  message.warning('This row is locked and cannot be edited.');
+                } else if (!sub || sub === 'default') {
+                  message.warning('Supervisor has not assigned an instrument for this characteristic.');
+                }
                 return;
               }
               setUsedInstrumentRecord(record);
@@ -593,7 +627,7 @@ const InspectorBOCTable = ({
           <Popover content={filterContent} title="Filter" trigger="click" placement="bottomRight"><Button size="small" type={filterActive ? 'primary' : 'text'} icon={<FilterOutlined style={{ fontSize: 14, color: filterActive ? undefined : '#64748b' }} />} /></Popover>
         </Space>
       </div>
-      <div ref={tableScrollRef} className="qms-boc-table-wrap" style={{ flex: 1, minHeight: 0, overflow: 'hidden', overscrollBehavior: 'contain', cursor: measureMode ? 'grab' : 'default' }}>
+      <div ref={tableScrollRef} className="qms-boc-table-wrap" style={{ flex: 1, minHeight: 0, overflow: 'hidden', overscrollBehavior: 'contain', cursor: measureMode ? 'default' : 'default' }}>
         <style>{`
           .qms-boc-table-wrap .ant-spin-nested-loading,
           .qms-boc-table-wrap .ant-spin-container,

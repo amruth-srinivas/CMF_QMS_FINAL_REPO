@@ -18,6 +18,8 @@ from sqlalchemy import (
 
     Float,
 
+    Date,
+
     func
 
 )
@@ -158,6 +160,28 @@ class Vendors(Base):
 
 # =======================
 
+# Tool / instrument categories (self-referential tree)
+
+# =======================
+
+class Category(Base):
+
+    __tablename__ = "categories"
+
+    __table_args__ = {'schema': 'inventory'}
+
+
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+
+    name = Column(String, nullable=False)
+
+    parent_id = Column(Integer, ForeignKey("inventory.categories.id"), nullable=True)
+
+
+
+# =======================
+
 # Tools List
 
 # =======================
@@ -198,9 +222,15 @@ class ToolsList(Base):
 
     issues_qty          = Column(Integer, nullable=True)      # aggregate issued qty
 
-    category            = Column(String, nullable=True)       # "Tools" / "Instruments" / "Misc"
+    category_id         = Column(Integer, ForeignKey("inventory.categories.id"), nullable=True)
 
-    sub_category        = Column(String, nullable=True)       # "Drills", "Micrometers", etc.
+    sub_category_id     = Column(Integer, ForeignKey("inventory.categories.id"), nullable=True)
+
+    calibration_frequency = Column(String, nullable=True)
+
+    calibration_date    = Column(Date, nullable=True)
+
+    calibration_due_date = Column(Date, nullable=True)
 
 
 

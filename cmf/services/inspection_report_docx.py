@@ -276,13 +276,14 @@ def _report_sheet_config(payload: Dict[str, Any], rows: List[Dict[str, Any]]) ->
     }
 
 
-def _append_report_banner(doc: Document) -> None:
+def _append_report_banner(doc: Document, payload: Dict[str, Any]) -> None:
     banner = doc.add_table(rows=1, cols=2)
     banner.alignment = WD_TABLE_ALIGNMENT.CENTER
     banner.autofit = False
     banner.width = Inches(7.1)
     _add_logo_to_cell(banner.cell(0, 0))
-    _write_cell(banner.cell(0, 1), "INSPECTION REPORT", bold=True, align="center", size=16)
+    title = str(payload.get("reportTitle") or "INSPECTION REPORT")
+    _write_cell(banner.cell(0, 1), title, bold=True, align="center", size=14 if "FINAL" in title.upper() else 16)
 
 
 def _append_report_sheet_table(doc: Document, payload: Dict[str, Any], sheet: Dict[str, Any]) -> None:
@@ -475,7 +476,7 @@ def build_inspection_report_docx(payload: Dict[str, Any]) -> BytesIO:
     normal.font.size = Pt(10)
 
     rows = _collect_all_report_rows(payload)
-    _append_report_banner(doc)
+    _append_report_banner(doc, payload)
     sheet = _report_sheet_config(payload, rows)
     _append_report_sheet_table(doc, payload, sheet)
 

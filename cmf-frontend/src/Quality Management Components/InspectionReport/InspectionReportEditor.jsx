@@ -90,7 +90,8 @@ function applySheetLayout(root, layout) {
   });
 }
 
-function ReportBannerHeader() {
+function ReportBannerHeader({ title = 'INSPECTION REPORT' }) {
+  const isFinal = String(title).toUpperCase().includes('FINAL');
   return (
     <table className="ir-header-banner" aria-label="Report header">
       <tbody>
@@ -98,8 +99,8 @@ function ReportBannerHeader() {
           <td className="ir-logo-cell">
             <img src={cmtiReportLogo} alt="CMTI" className="ir-report-logo" />
           </td>
-          <td className="ir-title-cell">
-            <strong>INSPECTION REPORT</strong>
+          <td className={`ir-title-cell${isFinal ? ' ir-title-cell--final' : ''}`}>
+            <strong>{title}</strong>
           </td>
         </tr>
       </tbody>
@@ -229,12 +230,12 @@ const ReportSheetEditor = forwardRef(function ReportSheetEditor(
     <div
       ref={pageRef}
       id={printRootId}
-      className={`ir-page ir-a4-sheet${embedded ? ' ir-a4-sheet--embedded' : ''}${qtyGroupStart ? ' ir-a4-sheet--qty-start' : ''}`}
+      className={`ir-page ir-a4-sheet${embedded ? ' ir-a4-sheet--embedded' : ''}${payload?.showFooter !== false ? ' ir-a4-sheet--with-footer' : ''}${qtyGroupStart ? ' ir-a4-sheet--qty-start' : ''}`}
       data-qty={payload?.totalQuantity ?? ''}
       data-page-index={pageIndex}
     >
-      <div className="ir-sheet-stack">
-        <ReportBannerHeader />
+      <div className={`ir-sheet-stack${payload?.showFooter !== false ? ' ir-sheet-stack--with-footer' : ''}`}>
+        <ReportBannerHeader title={payload?.reportTitle || 'INSPECTION REPORT'} />
         <EditorContent editor={editor} className="ir-editor-root" />
       </div>
     </div>

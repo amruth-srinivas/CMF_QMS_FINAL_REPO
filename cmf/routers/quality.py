@@ -9,11 +9,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 # pyrefly: ignore [missing-import]
 from sqlalchemy import and_, or_, func
 # pyrefly: ignore [missing-import]
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 from typing import List, Optional
 
 from DB.database import get_db
+from DB.models.inventory import ToolsList as ToolsListModel, Category
 from DB.models.quality import MasterBoc, StageInspection, Note, InspectionPlanStatus, FTP
+from DB.schemas.inventory import ToolsList
 from DB.models.notifications import InspectionPlanNotification
 from DB.models.oms import Part, Order, Operation
 from DB.models.scheduling import ProductionLog
@@ -73,6 +75,36 @@ def _normalized_ipid(ipid: Optional[str], op_no: Optional[int]) -> str:
     if op_no is not None:
         return f"OP_{op_no}"[:255]
     return "AUTO"
+
+
+def _serialize_tools_list_row(
+    tool: ToolsListModel,
+    category_name: Optional[str],
+    sub_category_name: Optional[str],
+) -> ToolsList:
+    item = ToolsList.model_validate(tool)
+    item.category_name = category_name
+    item.sub_category_name = sub_category_name
+    return item
+
+
+def _query_tools_with_categories(
+    db: Session,
+    category: Optional[str] = None,
+    sub_category: Optional[str] = None,
+):
+    cat = aliased(Category)
+    sub = aliased(Category)
+    q = (
+        db.query(ToolsListModel, cat.name, sub.name)
+        .outerjoin(cat, ToolsListModel.category_id == cat.id)
+        .outerjoin(sub, ToolsListModel.sub_category_id == sub.id)
+    )
+    if category:
+        q = q.filter(func.lower(cat.name) == category.strip().lower())
+    if sub_category:
+        q = q.filter(func.lower(sub.name) == sub_category.strip().lower())
+    return q.order_by(ToolsListModel.id.asc()).all()
 
 
 def _is_ftp_approved(db: Session, order_id: int, ipid: str) -> bool:
@@ -740,3 +772,25 @@ def delete_notes_for_part(
     q.delete()
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/instruments", response_model=List[ToolsList])
+def list_instruments(
+    category: Optional[str] = Query(None),
+    sub_category: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """List inventory instruments/tools with calibration fields for QMS inspector."""
+    rows = _query_tools_with_categories(db, category=category, sub_category=sub_category)
+    return [_serialize_tools_list_row(tool, cat_name, sub_name) for tool, cat_name, sub_name in rows]
+
+
+@router.get("/instruments/category/{category}/sub/{sub_category}", response_model=List[ToolsList])
+def list_instruments_by_sub_category(
+    category: str,
+    sub_category: str,
+    db: Session = Depends(get_db),
+):
+    """List instruments in a category/sub-category, including calibration_due_date."""
+    rows = _query_tools_with_categories(db, category=category, sub_category=sub_category)
+    return [_serialize_tools_list_row(tool, cat_name, sub_name) for tool, cat_name, sub_name in rows]

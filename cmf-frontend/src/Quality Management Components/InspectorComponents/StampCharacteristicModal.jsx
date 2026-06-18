@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Form, Input, InputNumber, Modal, Select, Spin } from 'antd';
 import { TOOLS_API_BASE_URL } from '../../Config/qualityconfig';
-import { DEFAULT_MEASURED_INSTRUMENT } from './inspectorConstants';
+import { DEFAULT_MEASURED_INSTRUMENT, getToolSubCategoryName } from './inspectorConstants';
 
 const INSTRUMENTS_API = `${TOOLS_API_BASE_URL}/tools-list/?category=${encodeURIComponent('Instruments')}`;
 
@@ -53,7 +53,7 @@ const StampCharacteristicModal = ({ open, onCancel, onOk, confirmLoading, defaul
         const seen = new Set();
         const subs = [];
         (Array.isArray(data) ? data : []).forEach((item) => {
-          const sub = (item?.sub_category || '').trim();
+          const sub = getToolSubCategoryName(item);
           if (!sub || seen.has(sub)) return;
           seen.add(sub);
           subs.push(sub);

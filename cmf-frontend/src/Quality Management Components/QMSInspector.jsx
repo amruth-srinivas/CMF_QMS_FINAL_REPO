@@ -150,6 +150,11 @@ const QMSInspector = () => {
       if (!Number.isNaN(n)) setOpNo(n);
     }
   }, [opNumber]);
+  const isFinalInspection = useMemo(() => {
+    if (Number(opNo) === 0) return true;
+    const name = (operationName || '').trim().toLowerCase();
+    return name.includes('final part') || name.includes('final inspection');
+  }, [opNo, operationName]);
   const ipid = useMemo(() => {
     const pn = (partNumber || 'PART').toString().trim().replace(/[^A-Za-z0-9_-]+/g, '_');
     const op = Number.isFinite(Number(opNo)) ? Number(opNo) : 'NA';
@@ -587,7 +592,7 @@ const QMSInspector = () => {
         instrument: st?.measured_instrument || r.instrument,
         usedInstrument: st?.used_inst ?? '',
         stageInspectionId: st?.id ?? null,
-        measureLocked: Boolean(st?.is_done) || (quantityNo === 1 && ftpApproved),
+        measureLocked: false,
       };
     });
   }, [bocDisplay, stageByMasterId, stageRows, quantityNo, ftpApproved]);
@@ -1312,6 +1317,7 @@ const QMSInspector = () => {
         projectName={projectName}
         partName={partName}
         operationName={operationName}
+        centerTitle={isFinalInspection ? 'Final Inspection' : ''}
         mode={inspectorMode}
         onModeChange={(newMode) => {
           if (isOperatorView) return;

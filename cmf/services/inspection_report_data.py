@@ -49,6 +49,20 @@ def _stage_remarks(row: Optional[StageInspection]) -> str:
     return str(getattr(row, "remarks", None) or "")
 
 
+def _report_instrument(m: Optional[StageInspection], ch: MasterBoc) -> str:
+    used = str(m.used_inst or "").strip() if m else ""
+    if used:
+        return used
+    planned = str((m.measured_instrument if m else None) or ch.measured_instrument or "").strip()
+    if planned and planned.lower() != "default":
+        return planned
+    return ""
+
+
+def _report_title(op_no: int) -> str:
+    return "FINAL INSPECTION REPORT" if int(op_no) == 0 else "INSPECTION REPORT"
+
+
 _MIN_ORPHAN_ROWS = 8
 
 
@@ -361,7 +375,7 @@ def build_inspection_report_payload(
                         ),
                         "zone": ch.zone or "",
                         "measurements": list(m.measurements or []) if m else [],
-                        "instrument": (m.measured_instrument if m else None) or ch.measured_instrument or "default",
+                        "instrument": _report_instrument(m, ch),
                         "remarks": _stage_remarks(m),
                     }
                 )
@@ -382,7 +396,7 @@ def build_inspection_report_payload(
                     ),
                     "zone": ch.zone or "",
                     "measurements": list(m.measurements or []) if m else [],
-                    "instrument": (m.measured_instrument if m else None) or ch.measured_instrument or "default",
+                    "instrument": _report_instrument(m, ch),
                     "remarks": _stage_remarks(m),
                 }
             )
@@ -410,6 +424,8 @@ def build_inspection_report_payload(
 
     result: Dict[str, Any] = {
         "reportNo": f"RPT-{sales_order_id}-{op_no}",
+        "reportTitle": _report_title(op_no),
+        "isFinalInspection": int(op_no) == 0,
         "componentTitle": part.part_name or "",
         "date": f"{now.month}/{now.day}/{now.year}",
         "projectNo": str(order.sale_order_number or sales_order_id),
