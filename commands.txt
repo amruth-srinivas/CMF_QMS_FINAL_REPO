@@ -1,0 +1,6 @@
+uvicorn main:app --reload --host 172.18.7.24 --port 8989 --reload
+
+venv/Scripts/activate
+
+# docker build
+docker build --progress=plain --no-cache -t priyaa007/cmf-qms-backend:v1 .
